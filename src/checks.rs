@@ -247,9 +247,13 @@ pub fn check_server_json(text: &str) -> Report {
                 Status::Fail,
                 format!("{at}: remove \"fileSha256\": the registry rejects it on cargo packages (it's for mcpb only)"),
             ),
-            Some(_) => r.push(
+            Some(Value::String(_)) | Some(Value::Null) => r.push(
                 Status::Warn,
                 format!("{at}: remove the empty \"fileSha256\": it's for mcpb only"),
+            ),
+            Some(_) => r.push(
+                Status::Fail,
+                format!("{at}: remove \"fileSha256\": it must be a string, and it's for mcpb only"),
             ),
             None => {}
         }
@@ -280,14 +284,22 @@ pub fn check_server_json(text: &str) -> Report {
                 format!("{at}: transport stdio must not have a url (got {url})"),
             ),
             Some("stdio") => {}
-            Some(t @ ("streamable-http" | "sse")) if url.is_empty() => r.push(
-                Status::Fail,
-                format!("{at}: transport {t} needs a url"),
-            ),
-            Some(t @ ("streamable-http" | "sse")) => r.push(
-                Status::Info,
-                format!("{at}: transport {t} (most cargo servers use stdio; the url's template variables aren't checked)"),
-            ),
+            Some(t @ ("streamable-http" | "sse")) if url.is_empty() => {
+                r.push(Status::Fail, format!("{at}: transport {t} needs a url"))
+            }
+            Some(t @ ("streamable-http" | "sse")) => {
+                if is_valid_templated_url(url, &package_variables(p)) {
+                    r.push(
+                        Status::Info,
+                        format!("{at}: transport {t} (most cargo servers use stdio)"),
+                    );
+                } else {
+                    r.push(
+                        Status::Fail,
+                        format!("{at}: transport url {url:?} isn't a valid http(s) url, or uses a {{variable}} the package doesn't declare"),
+                    );
+                }
+            }
             Some(t) => r.push(
                 Status::Fail,
                 format!("{at}: unsupported transport type \"{t}\" (stdio, streamable-http or sse)"),
@@ -501,7 +513,7 @@ pub async fn check_name(server_name: &str) -> Report {
                 .await
                 .ok()
                 .and_then(|v| v["type"].as_str().map(String::from))
-                .or(Some("unknown".to_string())),
+                .or(Some("unchecked no account type in the reply".to_string())),
             Ok(resp) => Some(format!("unchecked {}", resp.status().as_u16())),
             Err(_) => Some("unchecked no connection".to_string()),
         };
@@ -621,6 +633,58 @@ fn version_problem(v: &str) -> Option<String> {
     range.then(|| format!("\"{v}\" looks like a range: use one exact version"))
 }
 
+/// The variable names a package declares, which a transport url may use as
+/// `{name}`. Mirrors the registry's collectAvailableVariables.
+fn package_variables(p: &Value) -> Vec<String> {
+    let mut vars = Vec::new();
+    for env in p["environmentVariables"].as_array().into_iter().flatten() {
+        if let Some(n) = env["name"].as_str() {
+            vars.push(n.to_string());
+        }
+    }
+    for key in ["runtimeArguments", "packageArguments"] {
+        for arg in p[key].as_array().into_iter().flatten() {
+            for field in ["name", "valueHint"] {
+                if let Some(v) = arg[field].as_str().filter(|v| !v.is_empty()) {
+                    vars.push(v.to_string());
+                }
+            }
+        }
+    }
+    vars
+}
+
+/// Mirrors the registry's IsValidTemplatedURL: after template variables are
+/// replaced with stand-ins, an http(s) url with a host; and every `{variable}`
+/// is one the package declares.
+fn is_valid_templated_url(raw: &str, available: &[String]) -> bool {
+    use std::sync::LazyLock;
+    static PORT: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r":(\{[^}]+\})(/|$)").unwrap());
+    static VAR: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\{([^}]+)\}").unwrap());
+    let mut test = raw.to_string();
+    for (k, v) in [
+        ("{host}", "example.com"),
+        ("{port}", "8080"),
+        ("{path}", "api"),
+        ("{protocol}", "http"),
+        ("{scheme}", "http"),
+    ] {
+        test = test.replace(k, v);
+    }
+    let test = PORT.replace_all(&test, ":8080$2");
+    let test = VAR.replace_all(&test, "placeholder");
+    let Ok(u) = url::Url::parse(&test) else {
+        return false;
+    };
+    if !matches!(u.scheme(), "http" | "https") || u.host_str().is_none_or(str::is_empty) {
+        return false;
+    }
+    VAR.captures_iter(raw)
+        .all(|c| available.iter().any(|a| a == &c[1]))
+}
+
 /// An exact crate version, as crates.io stores it: MAJOR.MINOR.PATCH, with an
 /// optional pre-release and build.
 fn is_exact_semver(v: &str) -> bool {
@@ -718,6 +782,38 @@ mod tests {
         ));
         assert!(fails(r#""transport":{"type":"http"}"#));
         assert!(fails(r#""other":1"#));
+    }
+
+    #[test]
+    fn transport_urls_like_the_registry() {
+        let fails = |extra: &str| check_server_json(&with_pkg(extra)).failed();
+        assert!(fails(
+            r#""transport":{"type":"streamable-http","url":"not a url"}"#
+        ));
+        assert!(fails(
+            r#""transport":{"type":"sse","url":"ftp://example.com"}"#
+        ));
+        // {host} and {port} get stand-ins for the shape check, but like any
+        // {variable} they must still be declared by the package.
+        assert!(fails(
+            r#""transport":{"type":"streamable-http","url":"http://{host}:{port}/mcp"}"#
+        ));
+        assert!(!fails(
+            r#""transport":{"type":"streamable-http","url":"http://{host}:{port}/mcp"},"environmentVariables":[{"name":"host"},{"name":"port"}]"#
+        ));
+        assert!(fails(
+            r#""transport":{"type":"streamable-http","url":"https://example.com/{token}"}"#
+        ));
+        assert!(!fails(
+            r#""transport":{"type":"streamable-http","url":"https://example.com/{TOKEN}"},"environmentVariables":[{"name":"TOKEN"}]"#
+        ));
+    }
+
+    #[test]
+    fn non_string_sha_fails() {
+        assert!(
+            check_server_json(&with_pkg(r#""transport":{"type":"stdio"},"fileSha256":1"#)).failed()
+        );
     }
 
     #[test]
