@@ -395,7 +395,7 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
         return r;
     }
 
-    let resp = match http
+    let mut resp = match http
         .get(&readme_url)
         .header("Accept", "text/html")
         .send()
@@ -456,23 +456,29 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
         r.push(Status::Fail, msg);
         return r;
     }
-    let mut body = match resp.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            r.push(
-                Status::Fail,
-                format!("README not checked: failed to read the rendered README ({e}). Run again before you publish"),
-            );
-            return r;
+    // Read at most 5 MiB, like the registry's io.LimitReader; the rest is never downloaded.
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let room = MAX_README_BYTES - bytes.len();
+                bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+                if bytes.len() == MAX_README_BYTES {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                r.push(
+                    Status::Fail,
+                    format!("README not checked: failed to read the rendered README ({e}). Run again before you publish"),
+                );
+                return r;
+            }
         }
-    };
-    if body.len() > MAX_README_BYTES {
-        let mut cut = MAX_README_BYTES;
-        while !body.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        body.truncate(cut);
     }
+    // Invalid UTF-8 becomes U+FFFD, a non-name character, so token boundaries are unchanged.
+    let body = String::from_utf8_lossy(&bytes);
 
     if token::contains_token(&body, server_name) {
         r.push(
@@ -563,41 +569,72 @@ pub async fn check_name(server_name: &str) -> Report {
         );
     }
 
-    let url = format!(
-        "{REGISTRY}/v0.1/servers?search={}&version=latest",
-        urlencode(server_name)
-    );
-    match http.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let v: Value = resp.json().await.unwrap_or_default();
-            let hit = v["servers"].as_array().and_then(|a| {
-                a.iter()
-                    .find(|s| s["server"]["name"].as_str() == Some(server_name))
-            });
-            match hit {
-                Some(s) => {
-                    let ver = s["server"]["version"].as_str().unwrap_or("?");
-                    let st = s["_meta"]["io.modelcontextprotocol.registry/official"]["status"]
-                        .as_str()
-                        .unwrap_or("?");
-                    r.push(
-                        Status::Info,
-                        format!("already listed: latest {ver} ({st}). Your next publish needs a new version number"),
-                    );
-                }
-                None => r.push(
-                    Status::Pass,
-                    format!("{server_name} isn't listed yet: first publish"),
-                ),
-            }
+    match find_listing(&http, server_name).await {
+        Ok(Some(s)) => {
+            let ver = s["server"]["version"].as_str().unwrap_or("?");
+            let st = s["_meta"]["io.modelcontextprotocol.registry/official"]["status"]
+                .as_str()
+                .unwrap_or("?");
+            r.push(
+                Status::Info,
+                format!("already listed: latest {ver} ({st}). Your next publish needs a new version number"),
+            );
         }
-        Ok(resp) => r.push(
-            Status::Warn,
-            format!("registry search returned {}", resp.status()),
+        Ok(None) => r.push(
+            Status::Pass,
+            format!("{server_name} isn't listed yet: first publish"),
         ),
-        Err(e) => r.push(Status::Warn, format!("couldn't reach the registry: {e}")),
+        Err(why) => r.push(
+            Status::Warn,
+            format!("couldn't check whether it's listed: {why}"),
+        ),
     }
     r
+}
+
+/// Search pages the registry returns for one name (100 servers each).
+const SEARCH_MAX_PAGES: usize = 20;
+
+/// The latest listing with exactly this name. Search matches substrings, so
+/// io.github.you/widget also returns widget-pro: follow nextCursor until the
+/// exact name turns up or the results end.
+async fn find_listing(http: &reqwest::Client, server_name: &str) -> Result<Option<Value>, String> {
+    let mut cursor: Option<String> = None;
+    for _ in 0..SEARCH_MAX_PAGES {
+        let mut url = format!(
+            "{REGISTRY}/v0.1/servers?search={}&version=latest&limit=100",
+            urlencode(server_name)
+        );
+        if let Some(c) = &cursor {
+            url.push_str(&format!("&cursor={}", urlencode(c)));
+        }
+        let resp = http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("couldn't reach the registry ({e})"))?;
+        if !resp.status().is_success() {
+            return Err(format!("registry search returned {}", resp.status()));
+        }
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("couldn't read the registry's answer ({e})"))?;
+        if let Some(hit) = v["servers"].as_array().and_then(|a| {
+            a.iter()
+                .find(|s| s["server"]["name"].as_str() == Some(server_name))
+        }) {
+            return Ok(Some(hit.clone()));
+        }
+        match v["metadata"]["nextCursor"].as_str() {
+            Some(c) if !c.is_empty() => cursor = Some(c.to_string()),
+            _ => return Ok(None),
+        }
+    }
+    Err(format!(
+        "the search for it went past {} results",
+        SEARCH_MAX_PAGES * 100
+    ))
 }
 
 // ─── All of it ──────────────────────────────────────────────────────────

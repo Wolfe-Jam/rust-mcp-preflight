@@ -19,6 +19,8 @@ Usage:
   rust-mcp-preflight --version        Print the version (-V)
   rust-mcp-preflight --help           Print this help (-h)
 
+Exit codes (with a path): 0 ready, 1 any FAIL, 2 the file can't be read.
+
 Run with no arguments, it waits silently for an MCP client. Ctrl+C to quit.
 
 Add it to a client:

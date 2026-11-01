@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.1 (2026-11-01)
+
+Fixes from the 0.1.0 reviews and the first cold install.
+
+- The README is read up to 5 MiB and no further, as the registry's `io.LimitReader` does (0.1.0 downloaded all of it, then cut).
+- The name check follows the registry's search pages, so a listed name past the first page is no longer reported as "isn't listed yet". An unreadable answer now warns instead of passing.
+- MCP: a result with a FAIL has `isError` set, like the CLI's exit 1.
+- `--help` lists the exit codes: 0 ready, 1 any FAIL, 2 the file can't be read.
+- CI runs clippy and the tests on Rust 1.88 (the MSRV), not only a build.
+- crates.io's Documentation link points to the README: docs.rs builds libraries only, and this crate is a binary.
+- README: the install note (the first install compiles for a few minutes), the exit codes, and a business card (`agent.fafa`).
+
 ## 0.1.0 (2026-11-01)
 
 First release.
