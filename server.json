@@ -1,0 +1,19 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Wolfe-Jam/rust-mcp-preflight",
+  "title": "Rust MCP Preflight",
+  "description": "Check an MCP Registry listing before you publish: README mcp-name line, server.json, name.",
+  "repository": {
+    "url": "https://github.com/Wolfe-Jam/rust-mcp-preflight",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "cargo",
+      "identifier": "rust-mcp-preflight",
+      "version": "0.1.0",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}
