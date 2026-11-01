@@ -26,7 +26,7 @@ It prints one line per check and exits 1 if anything fails:
 
 ```
 Preflight: server.json
-  PASS  name "io.github.VoidNullable/lific" fits the pattern namespace/name
+  PASS  name "io.github.VoidNullable/lific" is a valid server name
   PASS  packages[0]: cargo crate "lific"
   WARN  VoidNullable is a GitHub organization: `mcp-publisher login github` can't publish to org namespaces yet (registry #1468). ...
   INFO  already listed: latest 2.11.1 (active). Your next publish needs a new version number
