@@ -82,6 +82,28 @@ pub fn glued_trailing(content: &str, server_name: &str) -> Option<char> {
     content[idx + token.len()..].chars().next()
 }
 
+/// `mcp-name:` lines whose spacing the registry won't accept (no space, or
+/// more than one), with the value and the number of spaces.
+pub fn spacing_misses(content: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(idx) = content[from..].find("mcp-name:") {
+        let start = from + idx + "mcp-name:".len();
+        let rest = &content[start..];
+        let spaces = rest.bytes().take_while(|&c| c == b' ').count();
+        let value: String = rest[spaces..]
+            .bytes()
+            .take_while(|&c| is_server_name_char(c))
+            .map(char::from)
+            .collect();
+        if spaces != 1 && !value.is_empty() {
+            out.push((value, spaces));
+        }
+        from = start;
+    }
+    out
+}
+
 /// Every `mcp-name:` value in the text, so a near miss can be named
 /// (a typo, the wrong case, another server's name).
 pub fn names_found(content: &str) -> Vec<String> {
@@ -203,6 +225,18 @@ mod tests {
         ] {
             assert!(server_name_problem(bad).is_some(), "{bad}");
         }
+    }
+
+    #[test]
+    fn spacing_misses_are_named() {
+        assert_eq!(
+            spacing_misses("mcp-name:io.github.acme/widget and mcp-name:  io.github.acme/w2"),
+            vec![
+                ("io.github.acme/widget".to_string(), 0),
+                ("io.github.acme/w2".to_string(), 2)
+            ]
+        );
+        assert!(spacing_misses("mcp-name: io.github.acme/widget").is_empty());
     }
 
     #[test]

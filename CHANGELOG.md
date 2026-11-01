@@ -20,4 +20,8 @@ Before the first publish, two independent reviews (2026-11-01) were checked agai
 - If GitHub's API can't be reached, the organization check says it wasn't checked instead of assuming a personal account.
 - Redirects are followed only on the default https port.
 - Near-miss `mcp-name:` values are listed only when spaced as the registry's token is.
+- `$schema` is required and must be a registry schema URL (as the registry's validateServerJSONSchema).
+- Every package type gets the registry's shared rules (version, transport, no spaces in the identifier), not only cargo.
+- The version-range patterns match Go's whitespace exactly (no vertical tab).
+- An `mcp-name:` with no space or several spaces is named, with the count.
 - The crate ships only what it needs (`include`).

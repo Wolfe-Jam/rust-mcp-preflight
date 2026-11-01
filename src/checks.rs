@@ -143,11 +143,18 @@ pub fn check_server_json(text: &str) -> Report {
         }
     }
 
-    if v.get("$schema").and_then(Value::as_str).is_none() {
-        r.push(
-            Status::Warn,
-            "no \"$schema\": add the registry schema URL so editors and mcp-publisher validate can check the shape",
-        );
+    // As the registry's validateServerJSONSchema: required, and a URL it can
+    // read a schema version from.
+    match v.get("$schema").and_then(Value::as_str) {
+        None | Some("") => r.push(
+            Status::Fail,
+            "\"$schema\" is required: add the registry schema URL (https://static.modelcontextprotocol.io/schemas/<version>/server.schema.json)",
+        ),
+        Some(url) if !schema_url_ok(url) => r.push(
+            Status::Fail,
+            format!("\"$schema\" {url:?} isn't a registry schema URL (…/schemas/<version>/server.schema.json)"),
+        ),
+        Some(_) => {}
     }
 
     let name = v.get("name").and_then(Value::as_str).unwrap_or("");
@@ -202,10 +209,59 @@ pub fn check_server_json(text: &str) -> Report {
         let kind = p.get("registryType").and_then(Value::as_str).unwrap_or("");
         let id = p.get("identifier").and_then(Value::as_str).unwrap_or("");
         let at = format!("packages[{i}]");
+
+        // The registry's validatePackageField, which runs on every package.
+        if id.contains(char::is_whitespace) {
+            r.push(
+                Status::Fail,
+                format!("{at}: identifier {id:?} can't contain spaces"),
+            );
+        }
+        if let Some(why) = p
+            .get("version")
+            .and_then(Value::as_str)
+            .and_then(version_problem)
+        {
+            r.push(Status::Fail, format!("{at}: version: {why}"));
+        }
+        // As the registry's validatePackageTransport.
+        let url = p
+            .pointer("/transport/url")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        match p.pointer("/transport/type").and_then(Value::as_str) {
+            Some("stdio") if !url.is_empty() => r.push(
+                Status::Fail,
+                format!("{at}: transport stdio must not have a url (got {url})"),
+            ),
+            Some("stdio") => {}
+            Some(t @ ("streamable-http" | "sse")) if url.is_empty() => {
+                r.push(Status::Fail, format!("{at}: transport {t} needs a url"))
+            }
+            Some(t @ ("streamable-http" | "sse")) => {
+                if is_valid_templated_url(url, &package_variables(p)) {
+                    r.push(Status::Info, format!("{at}: transport {t}"));
+                } else {
+                    r.push(
+                        Status::Fail,
+                        format!("{at}: transport url {url:?} isn't a valid http(s) url, or uses a {{variable}} the package doesn't declare"),
+                    );
+                }
+            }
+            Some(t) => r.push(
+                Status::Fail,
+                format!("{at}: unsupported transport type \"{t}\" (stdio, streamable-http or sse)"),
+            ),
+            None => r.push(
+                Status::Fail,
+                format!("{at}: \"transport\" is missing (usually {{\"type\": \"stdio\"}})"),
+            ),
+        }
+
         if kind != "cargo" {
             r.push(
                 Status::Info,
-                format!("{at}: registryType \"{kind}\" isn't checked by this version (cargo only)"),
+                format!("{at}: the {kind:?} registry's own checks aren't run by this version (cargo only)"),
             );
             continue;
         }
@@ -223,9 +279,7 @@ pub fn check_server_json(text: &str) -> Report {
                 format!("{at}: \"version\" is required for cargo: it says which crate version's README is checked"),
             ),
             Some(pv) => {
-                if let Some(why) = version_problem(pv) {
-                    r.push(Status::Fail, format!("{at}: version: {why}"));
-                } else if !is_exact_semver(pv) {
+                if version_problem(pv).is_none() && !is_exact_semver(pv) {
                     r.push(
                         Status::Warn,
                         format!("{at}: version \"{pv}\" isn't an exact crate version (like 0.3.0): crates.io can't look it up"),
@@ -272,42 +326,6 @@ pub fn check_server_json(text: &str) -> Report {
                 Status::Warn,
                 format!("{at}: drop \"runtimeHint\": cargo has no per-run runner (users cargo install once)"),
             );
-        }
-        // As the registry's validatePackageTransport.
-        let url = p
-            .pointer("/transport/url")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        match p.pointer("/transport/type").and_then(Value::as_str) {
-            Some("stdio") if !url.is_empty() => r.push(
-                Status::Fail,
-                format!("{at}: transport stdio must not have a url (got {url})"),
-            ),
-            Some("stdio") => {}
-            Some(t @ ("streamable-http" | "sse")) if url.is_empty() => {
-                r.push(Status::Fail, format!("{at}: transport {t} needs a url"))
-            }
-            Some(t @ ("streamable-http" | "sse")) => {
-                if is_valid_templated_url(url, &package_variables(p)) {
-                    r.push(
-                        Status::Info,
-                        format!("{at}: transport {t} (most cargo servers use stdio)"),
-                    );
-                } else {
-                    r.push(
-                        Status::Fail,
-                        format!("{at}: transport url {url:?} isn't a valid http(s) url, or uses a {{variable}} the package doesn't declare"),
-                    );
-                }
-            }
-            Some(t) => r.push(
-                Status::Fail,
-                format!("{at}: unsupported transport type \"{t}\" (stdio, streamable-http or sse)"),
-            ),
-            None => r.push(
-                Status::Fail,
-                format!("{at}: \"transport\" is missing (usually {{\"type\": \"stdio\"}})"),
-            ),
         }
     }
     r
@@ -476,6 +494,12 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
         Status::Fail,
         format!("README of {crate_name} {version} doesn't contain `mcp-name: {server_name}`. A README is fixed at cargo publish: add the line as visible text (crates.io strips HTML comments) and publish a new version"),
     );
+    for (value, spaces) in token::spacing_misses(&body) {
+        r.push(
+            Status::Info,
+            format!("found `mcp-name:` followed by {spaces} spaces before {value}; the registry needs exactly one space"),
+        );
+    }
     let near = token::names_found(&body);
     if !near.is_empty() {
         r.push(
@@ -610,14 +634,14 @@ fn version_problem(v: &str) -> Option<String> {
     // The registry's patterns (validators.go), unchanged.
     static RANGES: LazyLock<[regex::Regex; 3]> = LazyLock::new(|| {
         [
-            regex::Regex::new(r"(?-u)^\s*(?:\^|~|>=|<=|>|<|=)\s*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s*$").unwrap(),
-            regex::Regex::new(r"(?-u)^\s*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s-\s*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s*$").unwrap(),
-            regex::Regex::new(r"(?-u)^\s*(?:v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s*)(?:\|\|\s*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s*)+$").unwrap(),
+            regex::Regex::new(r"(?-u)^[\t\n\f\r ]*(?:\^|~|>=|<=|>|<|=)[\t\n\f\r ]*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?[\t\n\f\r ]*$").unwrap(),
+            regex::Regex::new(r"(?-u)^[\t\n\f\r ]*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?[\t\n\f\r ]-[\t\n\f\r ]*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?[\t\n\f\r ]*$").unwrap(),
+            regex::Regex::new(r"(?-u)^[\t\n\f\r ]*(?:v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?[\t\n\f\r ]*)(?:\|\|[\t\n\f\r ]*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?[\t\n\f\r ]*)+$").unwrap(),
         ]
     });
     static DOTTED: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(
-            r"(?-u)^\s*(?:v?\d+|x|X|\*)(?:\.(?:\d+|x|X|\*)){1,2}(?:-[0-9A-Za-z.-]+)?\s*$",
+            r"(?-u)^[\t\n\f\r ]*(?:v?\d+|x|X|\*)(?:\.(?:\d+|x|X|\*)){1,2}(?:-[0-9A-Za-z.-]+)?[\t\n\f\r ]*$",
         )
         .unwrap()
     });
@@ -685,6 +709,16 @@ fn is_valid_templated_url(raw: &str, available: &[String]) -> bool {
         .all(|c| available.iter().any(|a| a == &c[1]))
 }
 
+/// The registry's extractVersionFromSchemaURL: the URL must contain
+/// `/schemas/<version>/server.schema.json`.
+fn schema_url_ok(url: &str) -> bool {
+    use std::sync::LazyLock;
+    static RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?-u)/schemas/([A-Za-z0-9_~.-]+)/server\.schema\.json").unwrap()
+    });
+    RE.is_match(url)
+}
+
 /// An exact crate version, as crates.io stores it: MAJOR.MINOR.PATCH, with an
 /// optional pre-release and build.
 fn is_exact_semver(v: &str) -> bool {
@@ -740,7 +774,7 @@ mod tests {
     #[test]
     fn cargo_rules() {
         let r = check_server_json(
-            r#"{"$schema":"x","name":"io.github.you/widget","version":"0.3.0",
+            r#"{"$schema":"https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json","name":"io.github.you/widget","version":"0.3.0",
           "packages":[{"registryType":"cargo","identifier":"widget","fileSha256":"ab",
           "runtimeHint":"cargo","registryBaseUrl":"https://example.com","transport":{"type":"stdio"}}]}"#,
         );
@@ -764,7 +798,7 @@ mod tests {
 
     fn with_pkg(extra: &str) -> String {
         format!(
-            r#"{{"$schema":"x","name":"io.github.you/widget","version":"0.3.0",
+            r#"{{"$schema":"https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json","name":"io.github.you/widget","version":"0.3.0",
               "packages":[{{"registryType":"cargo","identifier":"widget","version":"0.3.0",{extra}}}]}}"#
         )
     }
@@ -807,6 +841,59 @@ mod tests {
         assert!(!fails(
             r#""transport":{"type":"streamable-http","url":"https://example.com/{TOKEN}"},"environmentVariables":[{"name":"TOKEN"}]"#
         ));
+    }
+
+    #[test]
+    fn schema_is_required_and_must_be_a_registry_url() {
+        assert!(
+            check_server_json(&GOOD.replace(
+                "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+                ""
+            ))
+            .failed()
+        );
+        assert!(
+            check_server_json(&GOOD.replace(
+                "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+                "x"
+            ))
+            .failed()
+        );
+        let no_schema = r#"{"name":"io.github.you/widget","version":"0.3.0","packages":[{"registryType":"cargo","identifier":"widget","version":"0.3.0","transport":{"type":"stdio"}}]}"#;
+        assert!(check_server_json(no_schema).failed());
+    }
+
+    #[test]
+    fn vertical_tab_is_not_whitespace_as_in_go() {
+        // Go RE2 \s has no \x0B; publish accepts this, so we must too.
+        assert_eq!(version_problem("1.0.0\u{000b}-\u{000b}2.0.0"), None);
+        assert!(version_problem("1.0.0 - 2.0.0").is_some());
+    }
+
+    #[test]
+    fn every_package_gets_the_shared_rules() {
+        let npm = |extra: &str| {
+            format!(
+                r#"{{"$schema":"https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json","name":"io.github.you/widget","version":"1.0.0",
+                  "packages":[{{"registryType":"npm","identifier":"widget","version":"1.0.0",{extra}}}]}}"#
+            )
+        };
+        assert!(!check_server_json(&npm(r#""transport":{"type":"stdio"}"#)).failed());
+        assert!(check_server_json(&npm(r#""transport":{"type":"http"}"#)).failed());
+        assert!(
+            check_server_json(&npm(r#""transport":{"type":"stdio"}"#).replace(
+                "\"version\":\"1.0.0\",\"transport",
+                "\"version\":\"^1.0.0\",\"transport"
+            ))
+            .failed()
+        );
+        assert!(
+            check_server_json(
+                &npm(r#""transport":{"type":"stdio"}"#)
+                    .replace("\"identifier\":\"widget\"", "\"identifier\":\"my widget\"")
+            )
+            .failed()
+        );
     }
 
     #[test]
