@@ -28,7 +28,7 @@ human_context:
   who: Developers listing an MCP server in the official MCP Registry, starting with Rust servers on crates.io
   what: Check an MCP Registry listing before you publish it.
   why: mcp-publisher validate checks the shape of server.json, not ownership; the README check only runs at publish, after the crate version is final
-  where: Locally over stdio in an MCP client, or as a CLI in a terminal or CI; reads crates.io and registry.modelcontextprotocol.io
+  where: Locally over stdio in an MCP client, or as a CLI in a terminal or CI; reads crates.io, registry.modelcontextprotocol.io and the GitHub users API
   when: Before every mcp-publisher publish, after cargo publish
   how: cargo install rust-mcp-preflight, then rust-mcp-preflight server.json (or claude mcp add preflight -- rust-mcp-preflight)
 monorepo:
@@ -42,6 +42,8 @@ tech_stack:
 key_files:
   - Cargo.toml
   - src/main.rs
+  - src/checks.rs
+  - src/token.rs
   - README.md
 commands:
   build: cargo build --release

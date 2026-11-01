@@ -82,11 +82,13 @@ impl Report {
     }
 }
 
-/// An HTTP client that, like the registry's, only follows redirects to
-/// crates.io, static.crates.io or the registry itself, over https.
+/// An HTTP client that, like the registry's, only follows redirects over https
+/// on the default port, to crates.io and static.crates.io (and the registry
+/// itself, for the name search).
 fn client() -> reqwest::Client {
     let policy = reqwest::redirect::Policy::custom(|attempt| {
         let ok = attempt.url().scheme() == "https"
+            && attempt.url().port().is_none()
             && matches!(
                 attempt.url().host_str(),
                 Some("crates.io" | "static.crates.io" | "registry.modelcontextprotocol.io")
@@ -149,23 +151,22 @@ pub fn check_server_json(text: &str) -> Report {
     }
 
     let name = v.get("name").and_then(Value::as_str).unwrap_or("");
-    if name.is_empty() {
-        r.push(Status::Fail, "\"name\" is missing");
-    } else if token::is_valid_server_name(name) {
-        r.push(
+    match token::server_name_problem(name) {
+        None => r.push(
             Status::Pass,
-            format!("name \"{name}\" fits the pattern namespace/name"),
-        );
-    } else {
-        r.push(
-            Status::Fail,
-            format!("name \"{name}\" doesn't fit ^[a-zA-Z0-9.-]+/[a-zA-Z0-9._-]+$"),
-        );
+            format!("name \"{name}\" is a valid server name"),
+        ),
+        Some(why) => r.push(Status::Fail, format!("name: {why}")),
     }
 
     let top_version = v.get("version").and_then(Value::as_str);
-    if top_version.is_none() {
-        r.push(Status::Fail, "top-level \"version\" is missing");
+    match top_version {
+        None | Some("") => r.push(Status::Fail, "top-level \"version\" is missing"),
+        Some(tv) => {
+            if let Some(why) = version_problem(tv) {
+                r.push(Status::Fail, format!("version: {why}"));
+            }
+        }
     }
 
     let packages = v.get("packages").and_then(Value::as_array);
@@ -222,6 +223,14 @@ pub fn check_server_json(text: &str) -> Report {
                 format!("{at}: \"version\" is required for cargo: it says which crate version's README is checked"),
             ),
             Some(pv) => {
+                if let Some(why) = version_problem(pv) {
+                    r.push(Status::Fail, format!("{at}: version: {why}"));
+                } else if !is_exact_semver(pv) {
+                    r.push(
+                        Status::Warn,
+                        format!("{at}: version \"{pv}\" isn't an exact crate version (like 0.3.0): crates.io can't look it up"),
+                    );
+                }
                 if top_version.is_some_and(|t| t != pv) {
                     r.push(
                         Status::Warn,
@@ -233,13 +242,20 @@ pub fn check_server_json(text: &str) -> Report {
                 }
             }
         }
-        if p.get("fileSha256").is_some() {
-            r.push(
+        match p.get("fileSha256") {
+            Some(Value::String(h)) if !h.is_empty() => r.push(
                 Status::Fail,
                 format!("{at}: remove \"fileSha256\": the registry rejects it on cargo packages (it's for mcpb only)"),
-            );
+            ),
+            Some(_) => r.push(
+                Status::Warn,
+                format!("{at}: remove the empty \"fileSha256\": it's for mcpb only"),
+            ),
+            None => {}
         }
+        // Empty means the default, https://crates.io (as the registry does).
         if let Some(base) = p.get("registryBaseUrl").and_then(Value::as_str)
+            && !base.is_empty()
             && base != CRATES_IO
         {
             r.push(
@@ -253,11 +269,28 @@ pub fn check_server_json(text: &str) -> Report {
                 format!("{at}: drop \"runtimeHint\": cargo has no per-run runner (users cargo install once)"),
             );
         }
+        // As the registry's validatePackageTransport.
+        let url = p
+            .pointer("/transport/url")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         match p.pointer("/transport/type").and_then(Value::as_str) {
+            Some("stdio") if !url.is_empty() => r.push(
+                Status::Fail,
+                format!("{at}: transport stdio must not have a url (got {url})"),
+            ),
             Some("stdio") => {}
-            Some(t) => r.push(
+            Some(t @ ("streamable-http" | "sse")) if url.is_empty() => r.push(
+                Status::Fail,
+                format!("{at}: transport {t} needs a url"),
+            ),
+            Some(t @ ("streamable-http" | "sse")) => r.push(
                 Status::Info,
-                format!("{at}: transport \"{t}\" (most cargo servers use stdio)"),
+                format!("{at}: transport {t} (most cargo servers use stdio; the url's template variables aren't checked)"),
+            ),
+            Some(t) => r.push(
+                Status::Fail,
+                format!("{at}: unsupported transport type \"{t}\" (stdio, streamable-http or sse)"),
             ),
             None => r.push(
                 Status::Fail,
@@ -294,7 +327,7 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
     let status = meta.status().as_u16();
     if status != 200 {
         if transient(status) {
-            r.push(Status::Warn, format!("crates.io returned {status} for the readme metadata: likely temporary, try again"));
+            r.push(Status::Fail, format!("README not checked: crates.io returned {status} for the readme metadata. Likely temporary: run again before you publish"));
         } else if status == 404 {
             r.push(
                 Status::Fail,
@@ -357,26 +390,52 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
             .send()
             .await
             .map(|r| r.status().as_u16());
+        // The four outcomes of the registry's cargoReadme403Error.
         match exists {
-            Ok(404) => r.push(Status::Fail, format!("{crate_name} {version} not found on crates.io: cargo publish first, then list")),
-            Ok(s) if transient(s) => r.push(Status::Warn, format!("crates.io couldn't confirm {crate_name} {version} ({s}): likely temporary, try again")),
-            _ => r.push(
+            Ok(200) => r.push(
                 Status::Fail,
-                format!("{crate_name} {version} has no rendered README (403). Add a README containing `mcp-name: {server_name}` and publish a new version"),
+                format!("{crate_name} {version} exists on crates.io, but its rendered README couldn't be retrieved (403). If it has no README, add one containing `mcp-name: {server_name}` and publish a new version"),
+            ),
+            Ok(404) => r.push(
+                Status::Fail,
+                format!("{crate_name} {version} not found on crates.io: cargo publish first, then list"),
+            ),
+            Ok(s) if transient(s) => r.push(
+                Status::Fail,
+                format!("README not checked: crates.io couldn't confirm {crate_name} {version} ({s}). Likely temporary: run again before you publish"),
+            ),
+            Err(_) => r.push(
+                Status::Fail,
+                format!("README not checked: couldn't reach crates.io to confirm {crate_name} {version}. Run again before you publish"),
+            ),
+            Ok(s) => r.push(
+                Status::Fail,
+                format!("{crate_name} {version} not found on crates.io (README 403, version lookup {s})"),
             ),
         }
         return r;
     }
     if status != 200 {
-        let s = if transient(status) {
-            Status::Warn
+        let msg = if transient(status) {
+            format!(
+                "README not checked: the rendered README fetch returned {status}. Likely temporary: run again before you publish"
+            )
         } else {
-            Status::Fail
+            format!("rendered README fetch failed ({status})")
         };
-        r.push(s, format!("rendered README fetch returned {status}"));
+        r.push(Status::Fail, msg);
         return r;
     }
-    let mut body = resp.text().await.unwrap_or_default();
+    let mut body = match resp.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            r.push(
+                Status::Fail,
+                format!("README not checked: failed to read the rendered README ({e}). Run again before you publish"),
+            );
+            return r;
+        }
+    };
     if body.len() > MAX_README_BYTES {
         let mut cut = MAX_README_BYTES;
         while !body.is_char_boundary(cut) {
@@ -421,11 +480,8 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
 /// its namespace needs.
 pub async fn check_name(server_name: &str) -> Report {
     let mut r = Report::default();
-    if !token::is_valid_server_name(server_name) {
-        r.push(
-            Status::Fail,
-            format!("\"{server_name}\" doesn't fit ^[a-zA-Z0-9.-]+/[a-zA-Z0-9._-]+$"),
-        );
+    if let Some(why) = token::server_name_problem(server_name) {
+        r.push(Status::Fail, format!("name: {why}"));
         return r;
     }
     let (ns, _) = server_name.split_once('/').unwrap_or_default();
@@ -444,14 +500,20 @@ pub async fn check_name(server_name: &str) -> Report {
                 .json::<Value>()
                 .await
                 .ok()
-                .and_then(|v| v["type"].as_str().map(String::from)),
-            _ => None,
+                .and_then(|v| v["type"].as_str().map(String::from))
+                .or(Some("unknown".to_string())),
+            Ok(resp) => Some(format!("unchecked {}", resp.status().as_u16())),
+            Err(_) => Some("unchecked no connection".to_string()),
         };
         match kind.as_deref() {
             Some("missing") => r.push(Status::Fail, format!("no GitHub account or organization named {owner}")),
             Some("Organization") => r.push(
                 Status::Warn,
                 format!("{owner} is a GitHub organization: `mcp-publisher login github` can't publish to org namespaces yet (registry #1468). Be an org Owner, then publish from GitHub Actions or log in with a token that has read:org"),
+            ),
+            Some(k) if k.starts_with("unchecked") => r.push(
+                Status::Warn,
+                format!("couldn't check whether {owner} is a GitHub organization (GitHub API: {}). If it is, `mcp-publisher login github` can't publish there yet (registry #1468)", k.trim_start_matches("unchecked ")),
             ),
             _ => r.push(
                 Status::Info,
@@ -511,7 +573,8 @@ pub async fn preflight(server_json: &str) -> Report {
         return r;
     };
     let name = v["name"].as_str().unwrap_or("").to_string();
-    if name.is_empty() {
+    // A bad name is already reported above, and nothing below can pass without it.
+    if token::server_name_problem(&name).is_some() {
         return r;
     }
     r.extend(check_name(&name).await);
@@ -526,6 +589,46 @@ pub async fn preflight(server_json: &str) -> Report {
         }
     }
     r
+}
+
+/// Why the registry would refuse this version string, or `None`.
+/// Mirrors validateVersion: "latest" is reserved, and ranges are refused.
+fn version_problem(v: &str) -> Option<String> {
+    use std::sync::LazyLock;
+    // The registry's patterns (validators.go), unchanged.
+    static RANGES: LazyLock<[regex::Regex; 3]> = LazyLock::new(|| {
+        [
+            regex::Regex::new(r"(?-u)^\s*(?:\^|~|>=|<=|>|<|=)\s*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s*$").unwrap(),
+            regex::Regex::new(r"(?-u)^\s*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s-\s*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s*$").unwrap(),
+            regex::Regex::new(r"(?-u)^\s*(?:v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s*)(?:\|\|\s*v?\d+(?:\.\d+){0,3}(?:-[0-9A-Za-z.-]+)?\s*)+$").unwrap(),
+        ]
+    });
+    static DOTTED: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?-u)^\s*(?:v?\d+|x|X|\*)(?:\.(?:\d+|x|X|\*)){1,2}(?:-[0-9A-Za-z.-]+)?\s*$",
+        )
+        .unwrap()
+    });
+    if v == "latest" {
+        return Some("\"latest\" is reserved: use the exact version".into());
+    }
+    let t = v.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let range = RANGES.iter().any(|re| re.is_match(t))
+        || (DOTTED.is_match(t) && (t.contains('x') || t.contains('X') || t.contains('*')));
+    range.then(|| format!("\"{v}\" looks like a range: use one exact version"))
+}
+
+/// An exact crate version, as crates.io stores it: MAJOR.MINOR.PATCH, with an
+/// optional pre-release and build.
+fn is_exact_semver(v: &str) -> bool {
+    use std::sync::LazyLock;
+    static SEMVER: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?-u)^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$").unwrap()
+    });
+    SEMVER.is_match(v)
 }
 
 fn urlencode(s: &str) -> String {
@@ -593,6 +696,70 @@ mod tests {
         ));
         assert!(statuses(&r).contains(&Status::Warn));
         assert!(!r.failed());
+    }
+
+    fn with_pkg(extra: &str) -> String {
+        format!(
+            r#"{{"$schema":"x","name":"io.github.you/widget","version":"0.3.0",
+              "packages":[{{"registryType":"cargo","identifier":"widget","version":"0.3.0",{extra}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn transport_rules_match_the_registry() {
+        let fails = |extra: &str| check_server_json(&with_pkg(extra)).failed();
+        assert!(!fails(r#""transport":{"type":"stdio"}"#));
+        assert!(fails(
+            r#""transport":{"type":"stdio","url":"http://example.com"}"#
+        ));
+        assert!(fails(r#""transport":{"type":"streamable-http"}"#));
+        assert!(!fails(
+            r#""transport":{"type":"streamable-http","url":"https://example.com/mcp"}"#
+        ));
+        assert!(fails(r#""transport":{"type":"http"}"#));
+        assert!(fails(r#""other":1"#));
+    }
+
+    #[test]
+    fn latest_and_ranges_fail() {
+        for v in [
+            "latest",
+            "^1.2.3",
+            "~1.2",
+            ">=1.0.0",
+            "1.2.x",
+            "1.2 || 1.3",
+            "1.0.0 - 2.0.0",
+        ] {
+            assert!(version_problem(v).is_some(), "{v}");
+        }
+        for v in ["0.3.0", "1.0.0-beta.1", "1", "2.0"] {
+            assert_eq!(version_problem(v), None, "{v}");
+        }
+        let json = GOOD.replace("\"0.3.0\"", "\"latest\"");
+        assert!(check_server_json(&json).failed());
+    }
+
+    #[test]
+    fn inexact_crate_version_warns() {
+        let r = check_server_json(&GOOD.replace("\"0.3.0\"", "\"1\""));
+        assert!(!r.failed());
+        assert!(r.render("t").contains("isn't an exact crate version"));
+    }
+
+    #[test]
+    fn empty_sha_and_base_url_like_the_registry() {
+        let r = check_server_json(&with_pkg(
+            r#""transport":{"type":"stdio"},"fileSha256":"","registryBaseUrl":"""#,
+        ));
+        assert!(!r.failed(), "{}", r.render("t"));
+        assert!(statuses(&r).contains(&Status::Warn));
+    }
+
+    #[test]
+    fn short_name_fails() {
+        let r = check_server_json(&GOOD.replace("io.github.you/widget", "a/b"));
+        assert!(r.failed());
     }
 
     #[test]

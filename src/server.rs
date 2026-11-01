@@ -63,7 +63,7 @@ impl PreflightServer {
     }
 
     #[tool(
-        description = "Check a server.json against the MCP Registry's rules for cargo packages: name pattern, version present, no fileSha256, no runtimeHint, transport. Offline.",
+        description = "Check a server.json against the MCP Registry's publish rules: the server name, exact versions (no latest, no ranges), and for cargo packages the crate name and version, no fileSha256, registryBaseUrl and transport. Also warns on runtimeHint, mismatched versions and init placeholders. Offline.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn check_server_json(&self, params: Parameters<ServerJsonParams>) -> String {

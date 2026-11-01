@@ -5,8 +5,8 @@ Check an MCP Registry listing **before** you publish it.
 `mcp-publisher validate` checks the shape of `server.json`. It doesn't check that the registry will accept your package: that only happens at `mcp-publisher publish`, after the crate version is already on crates.io and can't be changed. Rust MCP Preflight runs those checks first.
 
 - **The README line.** Fetches the README crates.io serves for the exact crate version and looks for `mcp-name: <your server name>`, matched the way the registry matches it (ported from the registry's own validator). Catches the line hidden in an HTML comment (crates.io strips comments), the line glued to the next word, and a near miss such as the wrong case.
-- **server.json for cargo.** Version present, no `fileSha256`, no `runtimeHint`, `registryBaseUrl`, transport, versions in step, and placeholders left over from `mcp-publisher init`.
-- **The server name.** The pattern, whether it's already listed, and which login its namespace needs (including GitHub organizations, which `login github` can't publish to yet).
+- **server.json.** The rules `mcp-publisher publish` applies: the server name, exact versions (no `latest`, no ranges), and for cargo packages the crate version, no `fileSha256`, `registryBaseUrl` and transport. Plus warnings for `runtimeHint`, mismatched versions, and placeholders left over from `mcp-publisher init`.
+- **The server name.** The rules publish applies, whether it's already listed, and which login its namespace needs (including GitHub organizations, which `login github` can't publish to yet).
 
 It only reads: crates.io, the official registry and the GitHub users API. It publishes nothing and needs no keys.
 
@@ -48,9 +48,9 @@ claude mcp add preflight -- rust-mcp-preflight
 | Tool | What it checks |
 |---|---|
 | `preflight` | Everything below, from the text of `server.json` |
-| `check_server_json` | The cargo rules (offline) |
+| `check_server_json` | The publish rules (offline) |
 | `check_readme` | The `mcp-name:` line in one crate version's README on crates.io |
-| `check_name` | The name's pattern, listing and namespace login |
+| `check_name` | The name's publish rules, listing and namespace login |
 
 ## Where it fits
 
@@ -58,7 +58,9 @@ The order is: `cargo publish` (with the line in the README), then `rust-mcp-pref
 
 The full walk-through: [Listing a Rust MCP server in the official MCP Registry](https://wolfejam.dev/blog/rust-registry-guide).
 
-This version checks cargo packages. npm and PyPI entries are listed as not checked.
+This version checks cargo packages. Other package types (npm, PyPI, mcpb and so on) are listed as not checked.
+
+If crates.io or the README can't be reached, the README counts as not checked and the result is a failure, so a CI run never passes on a README it didn't see.
 
 Listed and live? Get a free report on the whole server, not just the listing: [wolfejam.dev/#worth-it](https://wolfejam.dev/#worth-it)
 

@@ -5,19 +5,44 @@
 //! shared there by the PyPI, NuGet and Cargo validators. A README this module
 //! accepts is one the registry accepts.
 
-/// The server-name pattern from the registry schema.
-pub fn is_valid_server_name(name: &str) -> bool {
+/// Why a server name would be refused at publish, or `None` if it's fine.
+///
+/// Mirrors the registry's `parseServerName` (`internal/validators/validators.go`):
+/// one slash; the namespace matches `[a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]` and the
+/// name `[a-zA-Z0-9][a-zA-Z0-9._-]*[a-zA-Z0-9]`, so each side is at least two
+/// characters and starts and ends with a letter or digit. (Stricter than the
+/// schema's pattern, which is not what publish checks.)
+pub fn server_name_problem(name: &str) -> Option<String> {
+    if name.is_empty() {
+        return Some("server name is required".into());
+    }
     let Some((ns, rest)) = name.split_once('/') else {
-        return false;
+        return Some("server name must be namespace/name (e.g. io.github.you/widget)".into());
     };
-    !ns.is_empty()
-        && !rest.is_empty()
-        && ns
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'-')
-        && rest
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'.' || c == b'_' || c == b'-')
+    if rest.contains('/') {
+        return Some("server name can't have more than one slash".into());
+    }
+    if ns.is_empty() || rest.is_empty() {
+        return Some("both the namespace and the name must be non-empty".into());
+    }
+    let part_ok = |part: &str, middle: &dyn Fn(u8) -> bool| {
+        let b = part.as_bytes();
+        b.len() >= 2
+            && b[0].is_ascii_alphanumeric()
+            && b[b.len() - 1].is_ascii_alphanumeric()
+            && b.iter().all(|&c| c.is_ascii_alphanumeric() || middle(c))
+    };
+    if !part_ok(ns, &|c| c == b'.' || c == b'-') {
+        return Some(format!(
+            "namespace '{ns}' is invalid: it must be at least two characters, start and end with a letter or digit, and may contain dots and hyphens in the middle"
+        ));
+    }
+    if !part_ok(rest, &|c| c == b'.' || c == b'_' || c == b'-') {
+        return Some(format!(
+            "name '{rest}' is invalid: it must be at least two characters, start and end with a letter or digit, and may contain dots, underscores and hyphens in the middle"
+        ));
+    }
+    None
 }
 
 /// A byte that can continue a server name: `[A-Za-z0-9._/-]`.
@@ -64,8 +89,10 @@ pub fn names_found(content: &str) -> Vec<String> {
     let mut from = 0;
     while let Some(idx) = content[from..].find("mcp-name:") {
         let start = from + idx + "mcp-name:".len();
+        // The registry's token has exactly one space after the colon.
         let value: String = content[start..]
-            .trim_start_matches(' ')
+            .strip_prefix(' ')
+            .unwrap_or("")
             .bytes()
             .take_while(|&c| is_server_name_char(c))
             .map(char::from)
@@ -154,12 +181,33 @@ mod tests {
     }
 
     #[test]
-    fn server_name_pattern() {
-        assert!(is_valid_server_name("io.github.acme/widget"));
-        assert!(is_valid_server_name("com.example/my_server.v2"));
-        assert!(!is_valid_server_name("widget"));
-        assert!(!is_valid_server_name("io.github.acme/"));
-        assert!(!is_valid_server_name("io_github/acme"));
-        assert!(!is_valid_server_name("io.github.acme/wid/get"));
+    fn server_name_rules_match_publish() {
+        for ok in [
+            "io.github.acme/widget",
+            "com.example/my_server.v2",
+            "ab/cd",
+            "io.github.Wolfe-Jam/rust-mcp-preflight",
+        ] {
+            assert_eq!(server_name_problem(ok), None, "{ok}");
+        }
+        for bad in [
+            "widget",
+            "a/b",
+            "io.github.acme/w",
+            "io.github.acme/widget-",
+            "io.github.acme-/widget",
+            "-acme/widget",
+            "io_github/acme",
+            "io.github.acme/wid/get",
+            "io.github.acme/",
+        ] {
+            assert!(server_name_problem(bad).is_some(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn near_misses_need_exactly_one_space() {
+        assert!(names_found("mcp-name:  io.github.acme/widget").is_empty());
+        assert!(names_found("mcp-name:io.github.acme/widget").is_empty());
     }
 }

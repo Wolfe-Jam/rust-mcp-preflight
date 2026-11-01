@@ -10,6 +10,7 @@ repository = "https://github.com/Wolfe-Jam/rust-mcp-preflight"
 homepage = "https://wolfejam.dev/blog/rust-registry-guide"
 documentation = "https://docs.rs/rust-mcp-preflight"
 readme = "README.md"
+include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE", "CHANGELOG.md", "SECURITY.md", "server.json", "project.faf"]
 keywords = ["mcp", "mcp-registry", "crates-io", "rmcp", "preflight"]
 categories = ["development-tools", "command-line-utilities"]
 
@@ -24,6 +25,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 url = "2"
+regex = { version = "1", default-features = false, features = ["std", "perf"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
