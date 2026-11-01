@@ -60,6 +60,8 @@ The full walk-through: [Listing a Rust MCP server in the official MCP Registry](
 
 This version checks cargo packages. npm and PyPI entries are listed as not checked.
 
+Listed and live? Get a free report on the whole server, not just the listing: [wolfejam.dev/#worth-it](https://wolfejam.dev/#worth-it)
+
 ## Links
 
 - Repository: https://github.com/Wolfe-Jam/rust-mcp-preflight
