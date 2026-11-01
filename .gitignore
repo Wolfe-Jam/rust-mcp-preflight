@@ -1,1 +1,3 @@
 /target
+# mcp-publisher login writes OAuth credentials here
+.mcpregistry_*
