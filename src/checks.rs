@@ -461,9 +461,7 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
     loop {
         match resp.chunk().await {
             Ok(Some(chunk)) => {
-                let room = MAX_README_BYTES - bytes.len();
-                bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
-                if bytes.len() == MAX_README_BYTES {
+                if append_capped(&mut bytes, &chunk, MAX_README_BYTES) {
                     break;
                 }
             }
@@ -592,7 +590,38 @@ pub async fn check_name(server_name: &str) -> Report {
     r
 }
 
-/// Search pages the registry returns for one name (100 servers each).
+/// Adds `chunk` to `buf` without going past `cap` bytes. True once `buf` is full.
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
+    let room = cap.saturating_sub(buf.len());
+    buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+    buf.len() >= cap
+}
+
+/// What one page of registry search results says about an exact name.
+#[derive(Debug, PartialEq)]
+enum Page {
+    /// The listing with exactly this name.
+    Hit(Value),
+    /// Not on this page; the cursor for the next one.
+    Next(String),
+    /// Not on this page, and there are no more.
+    End,
+}
+
+fn scan_page(v: &Value, server_name: &str) -> Page {
+    if let Some(hit) = v["servers"].as_array().and_then(|a| {
+        a.iter()
+            .find(|s| s["server"]["name"].as_str() == Some(server_name))
+    }) {
+        return Page::Hit(hit.clone());
+    }
+    match v["metadata"]["nextCursor"].as_str() {
+        Some(c) if !c.is_empty() => Page::Next(c.to_string()),
+        _ => Page::End,
+    }
+}
+
+/// Most search pages fetched before giving up (100 results each).
 const SEARCH_MAX_PAGES: usize = 20;
 
 /// The latest listing with exactly this name. Search matches substrings, so
@@ -620,15 +649,10 @@ async fn find_listing(http: &reqwest::Client, server_name: &str) -> Result<Optio
             .json()
             .await
             .map_err(|e| format!("couldn't read the registry's answer ({e})"))?;
-        if let Some(hit) = v["servers"].as_array().and_then(|a| {
-            a.iter()
-                .find(|s| s["server"]["name"].as_str() == Some(server_name))
-        }) {
-            return Ok(Some(hit.clone()));
-        }
-        match v["metadata"]["nextCursor"].as_str() {
-            Some(c) if !c.is_empty() => cursor = Some(c.to_string()),
-            _ => return Ok(None),
+        match scan_page(&v, server_name) {
+            Page::Hit(hit) => return Ok(Some(hit)),
+            Page::Next(c) => cursor = Some(c),
+            Page::End => return Ok(None),
         }
     }
     Err(format!(
@@ -999,5 +1023,86 @@ mod tests {
     fn bad_json_and_bad_name_fail() {
         assert!(check_server_json("{").failed());
         assert!(check_server_json(r#"{"name":"widget","version":"1","packages":[]}"#).failed());
+    }
+
+    #[test]
+    fn append_capped_stops_at_the_cap() {
+        let mut buf = Vec::new();
+        assert!(!append_capped(&mut buf, b"abc", 5));
+        assert!(append_capped(&mut buf, b"defgh", 5));
+        assert_eq!(buf, b"abcde");
+        // Full: more input adds nothing.
+        assert!(append_capped(&mut buf, b"xyz", 5));
+        assert_eq!(buf.len(), 5);
+    }
+
+    #[test]
+    fn readme_cap_drops_the_byte_past_5_mib() {
+        let mut buf = Vec::new();
+        let big = vec![b'a'; MAX_README_BYTES + 1];
+        assert!(append_capped(&mut buf, &big, MAX_README_BYTES));
+        assert_eq!(buf.len(), MAX_README_BYTES);
+    }
+
+    #[test]
+    fn character_cut_at_the_cap_ends_the_name() {
+        // The token, then a 2-byte character split by the cap.
+        let name = "io.github.you/widget";
+        let input = format!("x x mcp-name: {name}\u{e9} tail");
+        let cap = input.find('\u{e9}').unwrap() + 1;
+        let mut buf = Vec::new();
+        assert!(append_capped(&mut buf, input.as_bytes(), cap));
+        let body = String::from_utf8_lossy(&buf);
+        assert!(body.ends_with('\u{FFFD}'));
+        assert!(token::contains_token(&body, name));
+    }
+
+    fn page(names: &[&str], next: Option<&str>) -> Value {
+        let servers: Vec<Value> = names
+            .iter()
+            .map(|n| serde_json::json!({ "server": { "name": n, "version": "1.0.0" } }))
+            .collect();
+        let mut v = serde_json::json!({ "servers": servers, "metadata": { "count": names.len() } });
+        if let Some(c) = next {
+            v["metadata"]["nextCursor"] = Value::from(c);
+        }
+        v
+    }
+
+    #[test]
+    fn scan_page_exact_hit() {
+        let v = page(
+            &["io.github.you/widget", "io.github.you/widget-pro"],
+            Some("c"),
+        );
+        match scan_page(&v, "io.github.you/widget") {
+            Page::Hit(h) => assert_eq!(h["server"]["name"], "io.github.you/widget"),
+            other => panic!("expected a hit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scan_page_substring_only_goes_to_the_next_page() {
+        let v = page(
+            &["io.github.you/widget-pro"],
+            Some("io.github.you/widget-pro:1.0.0"),
+        );
+        assert_eq!(
+            scan_page(&v, "io.github.you/widget"),
+            Page::Next("io.github.you/widget-pro:1.0.0".into())
+        );
+    }
+
+    #[test]
+    fn scan_page_ends_on_empty_or_missing_cursor_or_servers() {
+        assert_eq!(
+            scan_page(&page(&["a.b/other"], Some("")), "a.b/widget"),
+            Page::End
+        );
+        assert_eq!(
+            scan_page(&page(&["a.b/other"], None), "a.b/widget"),
+            Page::End
+        );
+        assert_eq!(scan_page(&serde_json::json!({}), "a.b/widget"), Page::End);
     }
 }
