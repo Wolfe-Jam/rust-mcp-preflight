@@ -1,5 +1,7 @@
 # Rust MCP Preflight
 
+[![Business card · Get yours →](https://wolfe-jam.github.io/agent-business-card/badge.svg)](https://wolfe-jam.github.io/agent-business-card/?repo=Wolfe-Jam/rust-mcp-preflight)
+
 Check an MCP Registry listing **before** you publish it.
 
 `mcp-publisher validate` checks the shape of `server.json`. It doesn't check that the registry will accept your package: that only happens at `mcp-publisher publish`, after the crate version is already on crates.io and can't be changed. Rust MCP Preflight runs those checks first.
@@ -16,13 +18,15 @@ It only reads: crates.io, the official registry and the GitHub users API. It pub
 cargo install rust-mcp-preflight
 ```
 
+The first install compiles from source and takes a few minutes.
+
 ## Use it from a terminal or CI
 
 ```sh
 rust-mcp-preflight server.json
 ```
 
-It prints one line per check and exits 1 if anything fails:
+It prints one line per check. It exits 0 when ready, 1 if anything fails, and 2 if the file can't be read:
 
 ```
 Preflight: server.json
@@ -51,6 +55,8 @@ claude mcp add preflight -- rust-mcp-preflight
 | `check_server_json` | The publish rules (offline) |
 | `check_readme` | The `mcp-name:` line in one crate version's README on crates.io |
 | `check_name` | The name's publish rules, listing and namespace login |
+
+A result with a FAIL has `isError` set, like the CLI's exit 1: the check ran, and the listing isn't ready.
 
 ## Where it fits
 

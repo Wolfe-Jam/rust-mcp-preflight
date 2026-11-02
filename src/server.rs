@@ -50,45 +50,59 @@ impl Default for PreflightServer {
     }
 }
 
+/// The report as text. isError is set when it has a FAIL, like the CLI's exit 1:
+/// the check ran, and the listing isn't ready.
+fn result(report: checks::Report, title: &str) -> CallToolResult {
+    let text = vec![ContentBlock::text(report.render(title))];
+    if report.failed() {
+        CallToolResult::error(text)
+    } else {
+        CallToolResult::success(text)
+    }
+}
+
 #[tool_router]
 impl PreflightServer {
     #[tool(
         description = "Run every check on a server.json before mcp-publisher publish: its cargo rules, the server name, and the mcp-name line in each cargo package's README on crates.io. Reads only; publishes nothing.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
-    async fn preflight(&self, params: Parameters<ServerJsonParams>) -> String {
-        checks::preflight(&params.0.server_json)
-            .await
-            .render("Preflight")
+    async fn preflight(&self, params: Parameters<ServerJsonParams>) -> CallToolResult {
+        result(checks::preflight(&params.0.server_json).await, "Preflight")
     }
 
     #[tool(
         description = "Check a server.json against the MCP Registry's publish rules: the server name, exact versions (no latest, no ranges), and for cargo packages the crate name and version, no fileSha256, registryBaseUrl and transport. Also warns on runtimeHint, mismatched versions and init placeholders. Offline.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    async fn check_server_json(&self, params: Parameters<ServerJsonParams>) -> String {
-        checks::check_server_json(&params.0.server_json).render("server.json")
+    async fn check_server_json(&self, params: Parameters<ServerJsonParams>) -> CallToolResult {
+        result(
+            checks::check_server_json(&params.0.server_json),
+            "server.json",
+        )
     }
 
     #[tool(
         description = "Check that the README crates.io serves for this exact crate version contains `mcp-name: <server_name>`, matched the way the MCP Registry matches it at publish.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
-    async fn check_readme(&self, params: Parameters<ReadmeParams>) -> String {
+    async fn check_readme(&self, params: Parameters<ReadmeParams>) -> CallToolResult {
         let p = params.0;
-        checks::check_readme(&p.crate_name, &p.version, &p.server_name)
-            .await
-            .render("README on crates.io")
+        result(
+            checks::check_readme(&p.crate_name, &p.version, &p.server_name).await,
+            "README on crates.io",
+        )
     }
 
     #[tool(
         description = "Check an MCP server name: the pattern, whether it's already listed in the official registry, and which login its namespace needs.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
-    async fn check_name(&self, params: Parameters<NameParams>) -> String {
-        checks::check_name(&params.0.server_name)
-            .await
-            .render("Server name")
+    async fn check_name(&self, params: Parameters<NameParams>) -> CallToolResult {
+        result(
+            checks::check_name(&params.0.server_name).await,
+            "Server name",
+        )
     }
 }
 
@@ -98,7 +112,7 @@ impl ServerHandler for PreflightServer {
         let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         info.server_info = Implementation::new("rust-mcp-preflight", env!("CARGO_PKG_VERSION"));
         info.instructions = Some(
-            "Checks an MCP Registry listing before you publish it. Start with `preflight` and the text of server.json. Each line is PASS, FAIL, WARN or INFO; fix every FAIL before `mcp-publisher publish`."
+            "Checks an MCP Registry listing before you publish it. Start with `preflight` and the text of server.json. Each line is PASS, FAIL, WARN or INFO; fix every FAIL before `mcp-publisher publish`. A result with a FAIL has isError set: the check ran, and the listing isn't ready."
                 .into(),
         );
         info

@@ -395,7 +395,7 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
         return r;
     }
 
-    let resp = match http
+    let mut resp = match http
         .get(&readme_url)
         .header("Accept", "text/html")
         .send()
@@ -456,23 +456,27 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
         r.push(Status::Fail, msg);
         return r;
     }
-    let mut body = match resp.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            r.push(
-                Status::Fail,
-                format!("README not checked: failed to read the rendered README ({e}). Run again before you publish"),
-            );
-            return r;
+    // Read at most 5 MiB, like the registry's io.LimitReader; the rest is never downloaded.
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if append_capped(&mut bytes, &chunk, MAX_README_BYTES) {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                r.push(
+                    Status::Fail,
+                    format!("README not checked: failed to read the rendered README ({e}). Run again before you publish"),
+                );
+                return r;
+            }
         }
-    };
-    if body.len() > MAX_README_BYTES {
-        let mut cut = MAX_README_BYTES;
-        while !body.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        body.truncate(cut);
     }
+    // Invalid UTF-8 becomes U+FFFD, a non-name character, so token boundaries are unchanged.
+    let body = String::from_utf8_lossy(&bytes);
 
     if token::contains_token(&body, server_name) {
         r.push(
@@ -563,41 +567,106 @@ pub async fn check_name(server_name: &str) -> Report {
         );
     }
 
-    let url = format!(
-        "{REGISTRY}/v0.1/servers?search={}&version=latest",
-        urlencode(server_name)
-    );
-    match http.get(&url).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let v: Value = resp.json().await.unwrap_or_default();
-            let hit = v["servers"].as_array().and_then(|a| {
-                a.iter()
-                    .find(|s| s["server"]["name"].as_str() == Some(server_name))
-            });
-            match hit {
-                Some(s) => {
-                    let ver = s["server"]["version"].as_str().unwrap_or("?");
-                    let st = s["_meta"]["io.modelcontextprotocol.registry/official"]["status"]
-                        .as_str()
-                        .unwrap_or("?");
-                    r.push(
-                        Status::Info,
-                        format!("already listed: latest {ver} ({st}). Your next publish needs a new version number"),
-                    );
-                }
-                None => r.push(
-                    Status::Pass,
-                    format!("{server_name} isn't listed yet: first publish"),
-                ),
-            }
+    match find_listing(&http, server_name).await {
+        Ok(Some(s)) => {
+            let ver = s["server"]["version"].as_str().unwrap_or("?");
+            let st = s["_meta"]["io.modelcontextprotocol.registry/official"]["status"]
+                .as_str()
+                .unwrap_or("?");
+            r.push(
+                Status::Info,
+                format!("already listed: latest {ver} ({st}). Your next publish needs a new version number"),
+            );
         }
-        Ok(resp) => r.push(
-            Status::Warn,
-            format!("registry search returned {}", resp.status()),
+        Ok(None) => r.push(
+            Status::Pass,
+            format!("{server_name} isn't listed yet: first publish"),
         ),
-        Err(e) => r.push(Status::Warn, format!("couldn't reach the registry: {e}")),
+        Err(why) => r.push(
+            Status::Warn,
+            format!("couldn't check whether it's listed: {why}"),
+        ),
     }
     r
+}
+
+/// Adds `chunk` to `buf` without going past `cap` bytes. True once `buf` is full.
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
+    let room = cap.saturating_sub(buf.len());
+    buf.extend_from_slice(&chunk[..chunk.len().min(room)]);
+    buf.len() >= cap
+}
+
+/// What one page of registry search results says about an exact name.
+#[derive(Debug, PartialEq)]
+enum Page {
+    /// The listing with exactly this name.
+    Hit(Value),
+    /// Not on this page; the cursor for the next one.
+    Next(String),
+    /// Not on this page, and there are no more.
+    End,
+    /// No `servers` list: an answer that can't say either way.
+    Unreadable,
+}
+
+fn scan_page(v: &Value, server_name: &str) -> Page {
+    let Some(servers) = v["servers"].as_array() else {
+        return Page::Unreadable;
+    };
+    if let Some(hit) = servers
+        .iter()
+        .find(|s| s["server"]["name"].as_str() == Some(server_name))
+    {
+        return Page::Hit(hit.clone());
+    }
+    match v["metadata"]["nextCursor"].as_str() {
+        Some(c) if !c.is_empty() => Page::Next(c.to_string()),
+        _ => Page::End,
+    }
+}
+
+/// Most search pages fetched before giving up (100 results each).
+const SEARCH_MAX_PAGES: usize = 20;
+
+/// The latest listing with exactly this name. Search matches substrings, so
+/// io.github.you/widget also returns widget-pro: follow nextCursor until the
+/// exact name turns up or the results end.
+async fn find_listing(http: &reqwest::Client, server_name: &str) -> Result<Option<Value>, String> {
+    let mut cursor: Option<String> = None;
+    for _ in 0..SEARCH_MAX_PAGES {
+        let mut url = format!(
+            "{REGISTRY}/v0.1/servers?search={}&version=latest&limit=100",
+            urlencode(server_name)
+        );
+        if let Some(c) = &cursor {
+            url.push_str(&format!("&cursor={}", urlencode(c)));
+        }
+        let resp = http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("couldn't reach the registry ({e})"))?;
+        if !resp.status().is_success() {
+            return Err(format!("registry search returned {}", resp.status()));
+        }
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("couldn't read the registry's answer ({e})"))?;
+        match scan_page(&v, server_name) {
+            Page::Hit(hit) => return Ok(Some(hit)),
+            Page::Next(c) => cursor = Some(c),
+            Page::End => return Ok(None),
+            Page::Unreadable => {
+                return Err("the registry's answer had no servers list".into());
+            }
+        }
+    }
+    Err(format!(
+        "the search for it went past {} results",
+        SEARCH_MAX_PAGES * 100
+    ))
 }
 
 // ─── All of it ──────────────────────────────────────────────────────────
@@ -962,5 +1031,96 @@ mod tests {
     fn bad_json_and_bad_name_fail() {
         assert!(check_server_json("{").failed());
         assert!(check_server_json(r#"{"name":"widget","version":"1","packages":[]}"#).failed());
+    }
+
+    #[test]
+    fn append_capped_stops_at_the_cap() {
+        let mut buf = Vec::new();
+        assert!(!append_capped(&mut buf, b"abc", 5));
+        assert!(append_capped(&mut buf, b"defgh", 5));
+        assert_eq!(buf, b"abcde");
+        // Full: more input adds nothing.
+        assert!(append_capped(&mut buf, b"xyz", 5));
+        assert_eq!(buf.len(), 5);
+    }
+
+    #[test]
+    fn readme_cap_drops_the_byte_past_5_mib() {
+        let mut buf = Vec::new();
+        let big = vec![b'a'; MAX_README_BYTES + 1];
+        assert!(append_capped(&mut buf, &big, MAX_README_BYTES));
+        assert_eq!(buf.len(), MAX_README_BYTES);
+    }
+
+    #[test]
+    fn character_cut_at_the_cap_ends_the_name() {
+        // The token, then a 2-byte character split by the cap.
+        let name = "io.github.you/widget";
+        let input = format!("x x mcp-name: {name}\u{e9} tail");
+        let cap = input.find('\u{e9}').unwrap() + 1;
+        let mut buf = Vec::new();
+        assert!(append_capped(&mut buf, input.as_bytes(), cap));
+        let body = String::from_utf8_lossy(&buf);
+        assert!(body.ends_with('\u{FFFD}'));
+        assert!(token::contains_token(&body, name));
+    }
+
+    fn page(names: &[&str], next: Option<&str>) -> Value {
+        let servers: Vec<Value> = names
+            .iter()
+            .map(|n| serde_json::json!({ "server": { "name": n, "version": "1.0.0" } }))
+            .collect();
+        let mut v = serde_json::json!({ "servers": servers, "metadata": { "count": names.len() } });
+        if let Some(c) = next {
+            v["metadata"]["nextCursor"] = Value::from(c);
+        }
+        v
+    }
+
+    #[test]
+    fn scan_page_exact_hit() {
+        let v = page(
+            &["io.github.you/widget", "io.github.you/widget-pro"],
+            Some("c"),
+        );
+        match scan_page(&v, "io.github.you/widget") {
+            Page::Hit(h) => assert_eq!(h["server"]["name"], "io.github.you/widget"),
+            other => panic!("expected a hit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scan_page_substring_only_goes_to_the_next_page() {
+        let v = page(
+            &["io.github.you/widget-pro"],
+            Some("io.github.you/widget-pro:1.0.0"),
+        );
+        assert_eq!(
+            scan_page(&v, "io.github.you/widget"),
+            Page::Next("io.github.you/widget-pro:1.0.0".into())
+        );
+    }
+
+    #[test]
+    fn scan_page_ends_on_empty_or_missing_cursor() {
+        assert_eq!(
+            scan_page(&page(&["a.b/other"], Some("")), "a.b/widget"),
+            Page::End
+        );
+        assert_eq!(
+            scan_page(&page(&["a.b/other"], None), "a.b/widget"),
+            Page::End
+        );
+        assert_eq!(scan_page(&page(&[], None), "a.b/widget"), Page::End);
+    }
+
+    #[test]
+    fn scan_page_without_servers_is_unreadable_not_unlisted() {
+        assert_eq!(
+            scan_page(&serde_json::json!({}), "a.b/widget"),
+            Page::Unreadable
+        );
+        let no_list = serde_json::json!({ "servers": null, "metadata": {} });
+        assert_eq!(scan_page(&no_list, "a.b/widget"), Page::Unreadable);
     }
 }

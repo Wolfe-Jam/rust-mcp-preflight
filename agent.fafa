@@ -1,0 +1,43 @@
+version: "1.0"
+agent:
+  name: rust-mcp-preflight
+  displayName: Rust MCP Preflight
+  id: urn:air:wolfejam.dev:agent:rust-mcp-preflight
+  version: 0.1.1
+  description: "Checks an MCP Registry listing before you publish it: the mcp-name line in the README crates.io serves, the server.json publish rules, and the server name."
+  homepage: https://github.com/Wolfe-Jam/rust-mcp-preflight
+capabilities:
+  - name: preflight
+    type: tool
+    description: Run every check on a server.json, from its text
+    tags:
+      - preflight
+  - name: check_server_json
+    type: tool
+    description: The registry's publish rules for server.json (offline)
+    tags:
+      - check_server_json
+  - name: check_readme
+    type: tool
+    description: The mcp-name line in one crate version's README on crates.io
+    tags:
+      - check_readme
+  - name: check_name
+    type: tool
+    description: The name's publish rules, whether it's listed, and which login its namespace needs
+    tags:
+      - check_name
+endpoints:
+  - protocol: mcp
+    transport: stdio
+    location: rust-mcp-preflight
+metadata:
+  cards:
+    domain: wolfejam.dev
+    examples:
+      - Will the MCP Registry accept my Rust server before I publish?
+      - Why did mcp-publisher publish say my crate's README has no mcp-name?
+      - How do I check server.json for a cargo package?
+    packages:
+      - registryType: cargo
+        identifier: rust-mcp-preflight

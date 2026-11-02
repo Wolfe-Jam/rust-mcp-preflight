@@ -26,4 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.88
-      - run: cargo build --locked
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
