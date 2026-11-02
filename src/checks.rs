@@ -606,13 +606,18 @@ enum Page {
     Next(String),
     /// Not on this page, and there are no more.
     End,
+    /// No `servers` list: an answer that can't say either way.
+    Unreadable,
 }
 
 fn scan_page(v: &Value, server_name: &str) -> Page {
-    if let Some(hit) = v["servers"].as_array().and_then(|a| {
-        a.iter()
-            .find(|s| s["server"]["name"].as_str() == Some(server_name))
-    }) {
+    let Some(servers) = v["servers"].as_array() else {
+        return Page::Unreadable;
+    };
+    if let Some(hit) = servers
+        .iter()
+        .find(|s| s["server"]["name"].as_str() == Some(server_name))
+    {
         return Page::Hit(hit.clone());
     }
     match v["metadata"]["nextCursor"].as_str() {
@@ -653,6 +658,9 @@ async fn find_listing(http: &reqwest::Client, server_name: &str) -> Result<Optio
             Page::Hit(hit) => return Ok(Some(hit)),
             Page::Next(c) => cursor = Some(c),
             Page::End => return Ok(None),
+            Page::Unreadable => {
+                return Err("the registry's answer had no servers list".into());
+            }
         }
     }
     Err(format!(
@@ -1094,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_page_ends_on_empty_or_missing_cursor_or_servers() {
+    fn scan_page_ends_on_empty_or_missing_cursor() {
         assert_eq!(
             scan_page(&page(&["a.b/other"], Some("")), "a.b/widget"),
             Page::End
@@ -1103,6 +1111,16 @@ mod tests {
             scan_page(&page(&["a.b/other"], None), "a.b/widget"),
             Page::End
         );
-        assert_eq!(scan_page(&serde_json::json!({}), "a.b/widget"), Page::End);
+        assert_eq!(scan_page(&page(&[], None), "a.b/widget"), Page::End);
+    }
+
+    #[test]
+    fn scan_page_without_servers_is_unreadable_not_unlisted() {
+        assert_eq!(
+            scan_page(&serde_json::json!({}), "a.b/widget"),
+            Page::Unreadable
+        );
+        let no_list = serde_json::json!({ "servers": null, "metadata": {} });
+        assert_eq!(scan_page(&no_list, "a.b/widget"), Page::Unreadable);
     }
 }
