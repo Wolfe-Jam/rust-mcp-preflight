@@ -14,11 +14,19 @@ It only reads: crates.io, the official registry and the GitHub users API. It pub
 
 ## Install
 
+Prebuilt, in seconds (needs [cargo-binstall](https://github.com/cargo-bins/cargo-binstall)):
+
+```sh
+cargo binstall rust-mcp-preflight
+```
+
+From source (compiles, a few minutes the first time):
+
 ```sh
 cargo install rust-mcp-preflight
 ```
 
-The first install compiles from source and takes a few minutes.
+Or download the binary for your platform from the [release assets](https://github.com/Wolfe-Jam/rust-mcp-preflight/releases/latest): Linux (x86_64, aarch64), macOS (Intel, Apple silicon) and Windows (x86_64), each with a `.sha256` file. Prebuilt binaries start with 0.1.2; for an earlier version, `cargo binstall` compiles from source.
 
 ## Use it from a terminal or CI
 
