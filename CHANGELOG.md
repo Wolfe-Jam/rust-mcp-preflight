@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] (proposed 0.1.2)
+
+Prebuilt binaries, and the duplicate and over-broad messages from the 0.1.0 review (N5).
+
+- Prebuilt binaries: publishing a GitHub release builds Linux (x86_64, aarch64), macOS (x86_64, aarch64) and Windows (x86_64) binaries and attaches them, each with a SHA-256 file. `cargo binstall rust-mcp-preflight` downloads one in seconds instead of compiling for minutes (`[package.metadata.binstall]`).
+- A placeholder inside a longer one that also matched is reported once, as the longer one: `@YOUR_USERNAME/YOUR_REPO` no longer also reports `YOUR_USERNAME`. It still does when `YOUR_USERNAME` also appears on its own.
+- `com.example/` is a placeholder only at the start of `name`, so `telecom.example/` elsewhere in the file no longer trips it.
+- An invalid name is reported once by `preflight` (it has been since 0.1.0; now a test holds it there).
+- README: install with `cargo binstall` first, then `cargo install`, then the release assets.
+
 ## 0.1.1 (2026-11-01)
 
 Fixes from the 0.1.0 reviews and the first cold install.

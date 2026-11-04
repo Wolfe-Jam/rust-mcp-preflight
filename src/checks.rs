@@ -125,22 +125,14 @@ pub fn check_server_json(text: &str) -> Report {
         }
     };
 
+    let name = v.get("name").and_then(Value::as_str).unwrap_or("");
+
     // Placeholders `mcp-publisher init` writes, still unedited.
-    const PLACEHOLDERS: [&str; 6] = [
-        "com.example/",
-        "[describe what your server does]",
-        "@your-org/your-package",
-        "@YOUR_USERNAME/YOUR_REPO",
-        "YOUR_API_KEY",
-        "YOUR_USERNAME",
-    ];
-    for ph in PLACEHOLDERS {
-        if text.contains(ph) {
-            r.push(
-                Status::Fail,
-                format!("still has the mcp-publisher init placeholder {ph:?}: replace it with your own value"),
-            );
-        }
+    if name.starts_with(EXAMPLE_NAMESPACE) {
+        r.push(Status::Fail, placeholder_message(EXAMPLE_NAMESPACE));
+    }
+    for ph in placeholders_in(text) {
+        r.push(Status::Fail, placeholder_message(ph));
     }
 
     // As the registry's validateServerJSONSchema: required, and a URL it can
@@ -157,7 +149,6 @@ pub fn check_server_json(text: &str) -> Report {
         Some(_) => {}
     }
 
-    let name = v.get("name").and_then(Value::as_str).unwrap_or("");
     match token::server_name_problem(name) {
         None => r.push(
             Status::Pass,
@@ -329,6 +320,40 @@ pub fn check_server_json(text: &str) -> Report {
         }
     }
     r
+}
+
+/// The namespace `mcp-publisher init` writes when it can't guess one. Checked
+/// at the start of `name` only, so `telecom.example/` elsewhere doesn't trip it.
+const EXAMPLE_NAMESPACE: &str = "com.example/";
+
+/// The other placeholders `mcp-publisher init` writes, longest first.
+const PLACEHOLDERS: [&str; 5] = [
+    "[describe what your server does]",
+    "@YOUR_USERNAME/YOUR_REPO",
+    "@your-org/your-package",
+    "YOUR_USERNAME",
+    "YOUR_API_KEY",
+];
+
+fn placeholder_message(ph: &str) -> String {
+    format!("still has the mcp-publisher init placeholder {ph:?}: replace it with your own value")
+}
+
+/// The placeholders in `text`, each reported once at its longest: a match
+/// inside a longer placeholder that also matched (`YOUR_USERNAME` inside
+/// `@YOUR_USERNAME/YOUR_REPO`) isn't reported again. It still is when it
+/// also appears on its own.
+fn placeholders_in(text: &str) -> Vec<&'static str> {
+    let mut rest = text.to_string();
+    let mut found = Vec::new();
+    for ph in PLACEHOLDERS {
+        if rest.contains(ph) {
+            found.push(ph);
+            // NUL can't occur in a placeholder, so nothing new can match across it.
+            rest = rest.replace(ph, "\0");
+        }
+    }
+    found
 }
 
 // ─── README token on crates.io ──────────────────────────────────────────
@@ -1025,6 +1050,70 @@ mod tests {
         let text = r.render("t");
         assert!(text.contains("com.example/"));
         assert!(text.contains("no cargo package"));
+    }
+
+    fn lines_containing(r: &Report, needle: &str) -> usize {
+        r.lines.iter().filter(|(_, m)| m.contains(needle)).count()
+    }
+
+    #[tokio::test]
+    async fn preflight_reports_a_bad_name_once() {
+        // An invalid name returns before any network check, so this is offline.
+        let r = preflight(&GOOD.replace("io.github.you/widget", "a/b")).await;
+        assert!(r.failed());
+        assert_eq!(
+            lines_containing(&r, "namespace 'a' is invalid"),
+            1,
+            "{}",
+            r.render("t")
+        );
+    }
+
+    #[test]
+    fn placeholder_is_reported_at_its_longest() {
+        let r = check_server_json(&GOOD.replace(
+            "\"identifier\": \"widget\"",
+            "\"identifier\": \"@YOUR_USERNAME/YOUR_REPO\"",
+        ));
+        let text = r.render("t");
+        assert_eq!(lines_containing(&r, "placeholder"), 1, "{text}");
+        assert!(text.contains("\"@YOUR_USERNAME/YOUR_REPO\""));
+        assert!(!text.contains("placeholder \"YOUR_USERNAME\""));
+    }
+
+    #[test]
+    fn shorter_placeholder_on_its_own_is_still_reported() {
+        let r = check_server_json(
+            &GOOD
+                .replace(
+                    "\"identifier\": \"widget\"",
+                    "\"identifier\": \"@YOUR_USERNAME/YOUR_REPO\"",
+                )
+                .replace("for widgets", "by YOUR_USERNAME"),
+        );
+        assert_eq!(lines_containing(&r, "placeholder"), 2, "{}", r.render("t"));
+        assert_eq!(lines_containing(&r, "placeholder \"YOUR_USERNAME\""), 1);
+    }
+
+    #[test]
+    fn example_namespace_only_at_the_start_of_the_name() {
+        // telecom.example/ in the description isn't the init placeholder.
+        let r = check_server_json(&GOOD.replace(
+            "A Rust MCP server for widgets",
+            "Mirrors https://telecom.example/widgets",
+        ));
+        assert!(!r.failed(), "{}", r.render("t"));
+        assert_eq!(lines_containing(&r, "com.example/"), 0);
+
+        // Nor as the name's tail.
+        let r =
+            check_server_json(&GOOD.replace("io.github.you/widget", "io.telecom.example/widget"));
+        assert_eq!(lines_containing(&r, "placeholder"), 0, "{}", r.render("t"));
+
+        // At the start of the name, it is.
+        let r = check_server_json(&GOOD.replace("io.github.you/widget", "com.example/widget"));
+        assert!(r.failed());
+        assert_eq!(lines_containing(&r, "placeholder \"com.example/\""), 1);
     }
 
     #[test]
