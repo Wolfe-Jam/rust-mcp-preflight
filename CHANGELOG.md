@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] (proposed 0.1.2)
+## 0.1.2 (2026-11-04)
 
 Prebuilt binaries, and the duplicate and over-broad messages from the 0.1.0 review (N5).
 
