@@ -3,7 +3,7 @@ agent:
   name: rust-mcp-preflight
   displayName: Rust MCP Preflight
   id: urn:air:wolfejam.dev:agent:rust-mcp-preflight
-  version: 0.1.1
+  version: 0.1.2
   description: "Checks an MCP Registry listing before you publish it: the mcp-name line in the README crates.io serves, the server.json publish rules, and the server name."
   homepage: https://github.com/Wolfe-Jam/rust-mcp-preflight
 capabilities:
