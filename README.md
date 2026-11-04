@@ -26,7 +26,7 @@ From source (compiles, a few minutes the first time):
 cargo install rust-mcp-preflight
 ```
 
-Or download the binary for your platform from the [release assets](https://github.com/Wolfe-Jam/rust-mcp-preflight/releases/latest): Linux (x86_64, aarch64), macOS (Intel, Apple silicon) and Windows (x86_64), each with a `.sha256` file. Prebuilt binaries start with 0.1.2; for an earlier version, `cargo binstall` compiles from source.
+Or download the binary for your platform from the [release assets](https://github.com/Wolfe-Jam/rust-mcp-preflight/releases/latest): Linux (x86_64, aarch64), macOS (Intel, Apple silicon) and Windows (x86_64), each with a `.sha256` file. Prebuilt binaries start with 0.1.2; for an earlier version, `cargo binstall` falls back to QuickInstall or compiling from source.
 
 ## Use it from a terminal or CI
 
