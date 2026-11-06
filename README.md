@@ -6,7 +6,7 @@ Check an MCP Registry listing **before** you publish it.
 
 - **The README line.** Fetches the README crates.io serves for the exact crate version and looks for `mcp-name: <your server name>`, matched the way the registry matches it (ported from the registry's own validator, [`internal/validators/registries/cargo.go`](https://github.com/modelcontextprotocol/registry/blob/main/internal/validators/registries/cargo.go); the registry's validators haven't changed since this port, checked 2026-11-06). Catches the line hidden in an HTML comment (crates.io strips comments), the line glued to the next word, and a near miss such as the wrong case.
 - **server.json.** The rules `mcp-publisher publish` applies: `$schema`, the server name, and for every package exact versions (no `latest`, no ranges), the transport and no spaces in the identifier. For cargo packages also the crate version, no `fileSha256` and `registryBaseUrl`. Plus warnings for `runtimeHint`, mismatched versions, and placeholders left over from `mcp-publisher init`.
-- **The server name.** The rules publish applies, whether it's already listed, and which login its namespace needs (including GitHub organizations, which `login github` can't publish to yet).
+- **The server name.** The rules publish applies, whether it's already listed, and which login its namespace needs (including GitHub organizations, which `login github` can't publish to yet, and the two ways that work: GitHub Actions OIDC or a token).
 
 It only reads: crates.io, the official registry and the GitHub users API. It publishes nothing and needs no keys.
 
@@ -38,7 +38,7 @@ It prints one line per check. It exits 0 when ready, 1 if anything fails, and 2 
 Preflight: server.json
   PASS  name "io.github.VoidNullable/lific" is a valid server name
   PASS  packages[0]: cargo crate "lific"
-  WARN  VoidNullable is a GitHub organization: `mcp-publisher login github` can't publish to org namespaces yet (registry #1468). ...
+  WARN  VoidNullable is a GitHub organization. `mcp-publisher login github` can't publish to org namespaces yet (registry #1468). As an Owner of the organization, publish from GitHub Actions (`mcp-publisher login github-oidc`), or with a token: ...
   INFO  already listed: latest 2.11.1 (active). Your next publish needs a new version number
   PASS  README of lific 2.11.1 on crates.io contains `mcp-name: io.github.VoidNullable/lific`
 
