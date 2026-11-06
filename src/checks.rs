@@ -572,13 +572,14 @@ pub async fn check_name(server_name: &str) -> Report {
         };
         match kind.as_deref() {
             Some("missing") => r.push(Status::Fail, format!("no GitHub account or organization named {owner}")),
-            Some("Organization") => r.push(
-                Status::Warn,
-                format!("{owner} is a GitHub organization: `mcp-publisher login github` can't publish to org namespaces yet (registry #1468). Be an org Owner, then publish from GitHub Actions or log in with a token that has read:org"),
-            ),
+            Some("Organization") => r.push(Status::Warn, org_namespace_warning(owner)),
             Some(k) if k.starts_with("unchecked") => r.push(
                 Status::Warn,
-                format!("couldn't check whether {owner} is a GitHub organization (GitHub API: {}). If it is, `mcp-publisher login github` can't publish there yet (registry #1468)", k.trim_start_matches("unchecked ")),
+                format!(
+                    "couldn't check whether {owner} is a GitHub organization (GitHub API: {}). If it is: {}",
+                    k.trim_start_matches("unchecked "),
+                    ORG_PUBLISH_PATHS
+                ),
             ),
             _ => r.push(
                 Status::Info,
@@ -827,8 +828,36 @@ fn urlencode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
+/// How to publish to a GitHub organization namespace today, as the registry's
+/// authentication page puts it: interactive `login github` can't see org
+/// memberships (registry #1468), so use GitHub Actions OIDC or a token that can.
+/// OIDC grants `io.github.<repository_owner>/*` (registry github_oidc.go).
+const ORG_PUBLISH_PATHS: &str = "`mcp-publisher login github` can't publish to org namespaces yet (registry #1468). \
+As an Owner of the organization, publish from GitHub Actions (`mcp-publisher login github-oidc`), \
+or with a token: `mcp-publisher login github --token <TOKEN>` (classic token: read:org; \
+fine-grained: Organization > Members > Read-only). \
+https://modelcontextprotocol.io/registry/authentication";
+
+fn org_namespace_warning(owner: &str) -> String {
+    format!("{owner} is a GitHub organization. {ORG_PUBLISH_PATHS}")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn org_warning_names_both_paths_that_work() {
+        let w = org_namespace_warning("acme");
+        assert!(w.starts_with("acme is a GitHub organization."));
+        assert!(w.contains("registry #1468"));
+        assert!(w.contains("`mcp-publisher login github-oidc`"));
+        assert!(w.contains("`mcp-publisher login github --token <TOKEN>`"));
+        assert!(w.contains("read:org"));
+        assert!(w.contains("Members > Read-only"));
+        assert!(w.contains("https://modelcontextprotocol.io/registry/authentication"));
+        // the string continuation keeps single spaces between sentences
+        assert!(!w.contains("  "), "{w}");
+    }
+
     use super::*;
 
     fn statuses(r: &Report) -> Vec<Status> {

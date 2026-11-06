@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The GitHub organization warning names the two ways to publish an org server today, with the exact commands: GitHub Actions (`mcp-publisher login github-oidc`) or a token (`mcp-publisher login github --token <TOKEN>`; classic: read:org, fine-grained: Organization > Members > Read-only), and links the registry's authentication page. When GitHub can't be reached, the warning gives the same paths. From the registry's own docs (authentication.mdx) and code (github_oidc.go grants `io.github.<repository_owner>/*`).
+
 ## 0.1.3 (2026-11-06)
 
 Setup for more MCP clients, and a README without the sales line.
