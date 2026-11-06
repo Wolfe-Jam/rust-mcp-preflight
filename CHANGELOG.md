@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (2026-11-06)
+
+The namespace login check: for a domain namespace, is the key published where the registry will look, and will it accept it?
+
+- `check_name` (and `preflight`) checks a domain namespace (`com.example/...`) the way `mcp-publisher login dns` and `login http` are verified: a `v=MCPv1; k=<ed25519|ecdsap384>; p=<key>` record as a TXT record at the apex of the domain or a parent domain (DNS covers subdomains), or at `https://<domain>/.well-known/mcp-registry-auth` (that exact domain, no redirects, at most 4096 bytes). Keys are parsed as the registry parses them (Ed25519 32 bytes; P-384 49 bytes, compressed, on the curve; Go's whitespace and base64 rules). A record under `_mcp-auth.` or `_mcp-registry.` is named. Each key's fingerprint is printed, to compare when a signature doesn't verify. Ported from the registry's `internal/api/handlers/v0/auth` (`common.go`, `dns.go`, `http.go`).
+- A problem with one method fails the check only when no method proves the namespace: a working DNS login next to a redirecting HTTP endpoint is Ready, with the HTTP problem as information.
+- New dependencies: `hickory-resolver` (DNS through the system resolver, no third party), `p384` (the P-384 point check), `base64`.
+- Checked live against 15 servers published under domain namespaces in the MCP Registry: all 15 show a key the registry accepts (7 DNS, 8 HTTP).
 
 - The GitHub organization warning names the two ways to publish an org server today, with the exact commands: GitHub Actions (`mcp-publisher login github-oidc`) or a token (`mcp-publisher login github --token <TOKEN>`; classic: read:org, fine-grained: Organization > Members > Read-only), and links the registry's authentication page. When GitHub can't be reached, the warning gives the same paths. From the registry's own docs (authentication.mdx) and code (github_oidc.go grants `io.github.<repository_owner>/*`).
 

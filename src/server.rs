@@ -95,7 +95,7 @@ impl PreflightServer {
     }
 
     #[tool(
-        description = "Check an MCP server name: the pattern, whether it's already listed in the official registry, and which login its namespace needs.",
+        description = "Check an MCP server name: the pattern, whether it's already listed in the official registry, and which login its namespace needs. For a domain namespace (com.example/...), whether a DNS TXT or HTTP well-known key is published where mcp-publisher login dns/http looks, and whether the registry would accept it.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn check_name(&self, params: Parameters<NameParams>) -> CallToolResult {

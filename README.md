@@ -7,8 +7,9 @@ Check an MCP Registry listing **before** you publish it.
 - **The README line.** Fetches the README crates.io serves for the exact crate version and looks for `mcp-name: <your server name>`, matched the way the registry matches it (ported from the registry's own validator, [`internal/validators/registries/cargo.go`](https://github.com/modelcontextprotocol/registry/blob/main/internal/validators/registries/cargo.go); the registry's validators haven't changed since this port, checked 2026-11-06). Catches the line hidden in an HTML comment (crates.io strips comments), the line glued to the next word, and a near miss such as the wrong case.
 - **server.json.** The rules `mcp-publisher publish` applies: `$schema`, the server name, and for every package exact versions (no `latest`, no ranges), the transport and no spaces in the identifier. For cargo packages also the crate version, no `fileSha256` and `registryBaseUrl`. Plus warnings for `runtimeHint`, mismatched versions, and placeholders left over from `mcp-publisher init`.
 - **The server name.** The rules publish applies, whether it's already listed, and which login its namespace needs (including GitHub organizations, which `login github` can't publish to yet, and the two ways that work: GitHub Actions OIDC or a token).
+- **The namespace login** (new in 0.2.0). For a domain namespace (`com.example/...`), whether a public key is published where `mcp-publisher login dns` or `login http` will look, and whether the registry would accept it: the `v=MCPv1; k=...; p=...` record as a TXT record at the apex of the domain (or a parent domain: DNS covers subdomains) or at `https://<domain>/.well-known/mcp-registry-auth` (that exact domain, no redirects, at most 4096 bytes). Ed25519 and ECDSA P-384 keys are checked the way the registry checks them, and a record left under `_mcp-auth.` or `_mcp-registry.` is named. Ported from the registry's [`internal/api/handlers/v0/auth`](https://github.com/modelcontextprotocol/registry/tree/main/internal/api/handlers/v0/auth) (`common.go`, `dns.go`, `http.go`). It checks the published key, not your private key, so it prints each key's fingerprint to compare when a signature doesn't verify.
 
-It only reads: crates.io, the official registry and the GitHub users API. It publishes nothing and needs no keys.
+It only reads: crates.io, the official registry, the GitHub users API and, for a domain namespace, that domain's DNS TXT records (through your system's resolver) and `https://<domain>/.well-known/mcp-registry-auth`. It publishes nothing and needs no keys.
 
 ## Install
 
@@ -99,7 +100,7 @@ Any other client that runs a local MCP server: the same command, `rust-mcp-prefl
 | `preflight` | Everything below, from the text of `server.json` |
 | `check_server_json` | The publish rules (offline) |
 | `check_readme` | The `mcp-name:` line in one crate version's README on crates.io |
-| `check_name` | The name's publish rules, listing and namespace login |
+| `check_name` | The name's publish rules, listing and namespace login (GitHub, or the DNS/HTTP key for a domain namespace) |
 
 A result with a FAIL has `isError` set, like the CLI's exit 1: the check ran, and the listing isn't ready.
 
