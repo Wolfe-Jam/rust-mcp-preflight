@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 (2026-11-06)
+
+Setup for more MCP clients, and a README without the sales line.
+
+- README: setup for goose (`--with-extension` and `config.yaml`), VS Code (`code --add-mcp` and `.vscode/mcp.json`) and Cursor (`mcp.json`), each from that client's own documentation, next to Claude Code.
+- Tests: the README's client snippets must parse and start `rust-mcp-preflight` over stdio, so a copied config can't drift from the binary.
+- README: links the registry validator it ports (`internal/validators/registries/cargo.go`); the registry's validators are unchanged since the port (checked 2026-11-06). The footer is "More about me and my work"; the business card badge moves there.
+- LICENSE: copyright holder "James Wolfe".
+
 ## 0.1.2 (2026-11-04)
 
 Prebuilt binaries, and the duplicate and over-broad messages from the 0.1.0 review (N5).
