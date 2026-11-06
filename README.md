@@ -47,13 +47,52 @@ Ready: no failures, 1 warning(s).
 
 ## Use it from an MCP client
 
+Run with no arguments, it serves MCP over stdio. Each client below starts it with the command `rust-mcp-preflight`, so the binary must be on your `PATH` (`cargo binstall` and `cargo install` put it in `~/.cargo/bin`).
+
+**Claude Code**
+
 ```sh
 claude mcp add preflight -- rust-mcp-preflight
 ```
 
-```json
-{ "mcpServers": { "preflight": { "command": "rust-mcp-preflight" } } }
+**goose** ([extensions](https://goose-docs.ai/docs/getting-started/using-extensions)): for one session,
+
+```sh
+goose session --with-extension "rust-mcp-preflight"
 ```
+
+or for every session, in `~/.config/goose/config.yaml`:
+
+```yaml
+extensions:
+  preflight:
+    name: preflight
+    cmd: rust-mcp-preflight
+    args: []
+    enabled: true
+    type: stdio
+    timeout: 300
+```
+
+**VS Code** ([MCP configuration](https://code.visualstudio.com/docs/copilot/reference/mcp-configuration)): adds it to your user profile,
+
+```sh
+code --add-mcp '{"name":"preflight","type":"stdio","command":"rust-mcp-preflight"}'
+```
+
+or for one workspace, in `.vscode/mcp.json`:
+
+```json
+{ "servers": { "preflight": { "type": "stdio", "command": "rust-mcp-preflight" } } }
+```
+
+**Cursor** ([MCP](https://cursor.com/docs/context/mcp)): in `~/.cursor/mcp.json`, or `.cursor/mcp.json` in a project:
+
+```json
+{ "mcpServers": { "preflight": { "type": "stdio", "command": "rust-mcp-preflight" } } }
+```
+
+Any other client that runs a local MCP server: the same command, `rust-mcp-preflight`, over stdio.
 
 | Tool | What it checks |
 |---|---|

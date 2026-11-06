@@ -68,3 +68,77 @@ async fn main() -> anyhow::Result<()> {
     service.waiting().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod readme_tests {
+    // The README's client setup is copied into config files as it stands, so
+    // every JSON snippet must parse and every client must start this binary.
+    const README: &str = include_str!("../README.md");
+
+    fn fenced(lang: &str) -> Vec<&'static str> {
+        let open = format!("```{lang}\n");
+        let mut out = Vec::new();
+        let mut rest = README;
+        while let Some(i) = rest.find(&open) {
+            let body = &rest[i + open.len()..];
+            let end = body.find("\n```").expect("unclosed code fence in README");
+            out.push(&body[..end]);
+            rest = &body[end..];
+        }
+        out
+    }
+
+    fn command_of(server: &serde_json::Value) -> Option<&str> {
+        server.get("command").and_then(|c| c.as_str())
+    }
+
+    #[test]
+    fn readme_json_snippets_parse_and_start_this_binary() {
+        let blocks = fenced("json");
+        assert!(
+            blocks.len() >= 2,
+            "expected the VS Code and Cursor snippets"
+        );
+        for block in blocks {
+            let v: serde_json::Value = serde_json::from_str(block)
+                .unwrap_or_else(|e| panic!("README JSON doesn't parse ({e}):\n{block}"));
+            let servers = v.get("servers").or_else(|| v.get("mcpServers"));
+            if let Some(servers) = servers.and_then(|s| s.as_object()) {
+                for (name, server) in servers {
+                    assert_eq!(command_of(server), Some("rust-mcp-preflight"), "{name}");
+                    assert_eq!(
+                        server.get("type").and_then(|t| t.as_str()),
+                        Some("stdio"),
+                        "{name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readme_vs_code_add_mcp_argument_parses() {
+        let line = README
+            .lines()
+            .find(|l| l.starts_with("code --add-mcp '"))
+            .expect("README has the code --add-mcp line");
+        let arg = line
+            .trim_start_matches("code --add-mcp '")
+            .trim_end_matches('\'');
+        let v: serde_json::Value = serde_json::from_str(arg).expect("--add-mcp JSON parses");
+        assert_eq!(v["name"], "preflight");
+        assert_eq!(command_of(&v), Some("rust-mcp-preflight"));
+    }
+
+    #[test]
+    fn readme_cli_clients_run_this_binary() {
+        assert!(README.contains("claude mcp add preflight -- rust-mcp-preflight"));
+        assert!(README.contains("goose session --with-extension \"rust-mcp-preflight\""));
+        let yaml = fenced("yaml").concat();
+        assert!(
+            yaml.contains("cmd: rust-mcp-preflight"),
+            "goose config.yaml snippet"
+        );
+        assert!(yaml.contains("type: stdio"), "goose config.yaml snippet");
+    }
+}
