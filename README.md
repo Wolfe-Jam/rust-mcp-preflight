@@ -1,7 +1,5 @@
 # Rust MCP Preflight
 
-[![Business card · Get yours →](https://wolfe-jam.github.io/agent-business-card/badge.svg)](https://wolfe-jam.github.io/agent-business-card/?repo=Wolfe-Jam/rust-mcp-preflight)
-
 Check an MCP Registry listing **before** you publish it.
 
 `mcp-publisher validate` checks the shape of `server.json`. It doesn't check that the registry will accept your package: that only happens at `mcp-publisher publish`, after the crate version is already on crates.io and can't be changed. Rust MCP Preflight runs those checks first.
@@ -88,3 +86,5 @@ MIT
 ---
 
 More about me and my work: [wolfejam.dev/info](https://wolfejam.dev/info)
+
+[![Business card · Get yours →](https://wolfe-jam.github.io/agent-business-card/badge.svg)](https://wolfe-jam.github.io/agent-business-card/?repo=Wolfe-Jam/rust-mcp-preflight)
