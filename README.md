@@ -1,12 +1,10 @@
 # Rust MCP Preflight
 
-[![Business card · Get yours →](https://wolfe-jam.github.io/agent-business-card/badge.svg)](https://wolfe-jam.github.io/agent-business-card/?repo=Wolfe-Jam/rust-mcp-preflight)
-
 Check an MCP Registry listing **before** you publish it.
 
 `mcp-publisher validate` checks the shape of `server.json`. It doesn't check that the registry will accept your package: that only happens at `mcp-publisher publish`, after the crate version is already on crates.io and can't be changed. Rust MCP Preflight runs those checks first.
 
-- **The README line.** Fetches the README crates.io serves for the exact crate version and looks for `mcp-name: <your server name>`, matched the way the registry matches it (ported from the registry's own validator). Catches the line hidden in an HTML comment (crates.io strips comments), the line glued to the next word, and a near miss such as the wrong case.
+- **The README line.** Fetches the README crates.io serves for the exact crate version and looks for `mcp-name: <your server name>`, matched the way the registry matches it (ported from the registry's own validator, [`internal/validators/registries/cargo.go`](https://github.com/modelcontextprotocol/registry/blob/main/internal/validators/registries/cargo.go); the registry's validators haven't changed since this port, checked 2026-11-06). Catches the line hidden in an HTML comment (crates.io strips comments), the line glued to the next word, and a near miss such as the wrong case.
 - **server.json.** The rules `mcp-publisher publish` applies: `$schema`, the server name, and for every package exact versions (no `latest`, no ranges), the transport and no spaces in the identifier. For cargo packages also the crate version, no `fileSha256` and `registryBaseUrl`. Plus warnings for `runtimeHint`, mismatched versions, and placeholders left over from `mcp-publisher init`.
 - **The server name.** The rules publish applies, whether it's already listed, and which login its namespace needs (including GitHub organizations, which `login github` can't publish to yet).
 
@@ -76,8 +74,6 @@ The README check and the crates.io rules are for cargo packages. Other package t
 
 If crates.io or the README can't be reached, the README counts as not checked and the result is a failure, so a CI run never passes on a README it didn't see.
 
-Listed and live? Get a free report on the whole server, not just the listing: [wolfejam.dev/#worth-it](https://wolfejam.dev/#worth-it)
-
 ## Links
 
 - Repository: https://github.com/Wolfe-Jam/rust-mcp-preflight
@@ -89,4 +85,6 @@ MIT
 
 ---
 
-[About wolfejam](https://wolfejam.dev/info)
+More about me and my work: [wolfejam.dev/info](https://wolfejam.dev/info)
+
+[![Business card · Get yours →](https://wolfe-jam.github.io/agent-business-card/badge.svg)](https://wolfe-jam.github.io/agent-business-card/?repo=Wolfe-Jam/rust-mcp-preflight)
