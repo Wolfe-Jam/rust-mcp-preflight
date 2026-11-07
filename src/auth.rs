@@ -11,6 +11,7 @@
 //! matches it, so it prints each key's fingerprint the way the registry does
 //! when a signature doesn't verify.
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -70,7 +71,12 @@ pub fn parse_key(algorithm: &str, public_key: &str) -> Result<Key, String> {
                 return Err("failed to decompress ECDSA P-384 public key".into());
             }
         }
-        other => return Err(format!("unsupported public key algorithm: {other}")),
+        other => {
+            return Err(format!(
+                "unsupported public key algorithm: {}",
+                printable(other)
+            ));
+        }
     }
     // Fingerprint in common.go: the algorithm and the first 8 base64 characters.
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -162,6 +168,34 @@ fn fingerprints(keys: &[Key]) -> String {
         .join(", ")
 }
 
+/// Text from someone else's record, made safe to print: control characters
+/// escaped (no terminal escapes reach the user or an MCP client) and at most
+/// 40 characters.
+fn printable(s: &str) -> String {
+    let shown: String = s.chars().take(40).flat_map(char::escape_debug).collect();
+    if s.chars().count() > 40 {
+        format!("{shown}...")
+    } else {
+        shown
+    }
+}
+
+/// An error and its causes, one after another: reqwest's own message
+/// ("error sending request") leaves out why.
+fn with_causes(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        let text = c.to_string();
+        if !out.contains(&text) {
+            out.push_str(": ");
+            out.push_str(&text);
+        }
+        cause = c.source();
+    }
+    out
+}
+
 /// A TXT lookup: the record strings (each record's strings joined, as Go's
 /// `LookupTXT` returns them), `Ok(empty)` when the name has no TXT records,
 /// or why the lookup failed.
@@ -187,26 +221,109 @@ async fn txt(
                 _ => None,
             })
             .collect()),
-        Err(e) if e.is_no_records_found() || e.is_nx_domain() => Ok(Vec::new()),
+        Err(e) if e.is_nx_domain() => Ok(Vec::new()),
+        // A real "no records" answer carries the zone's SOA (RFC 2308). An
+        // empty answer without one comes from a filtering or broken resolver,
+        // so it says nothing about the record.
+        Err(e) if e.is_no_records_found() && e.clone().into_soa().is_some() => Ok(Vec::new()),
+        Err(e) if e.is_no_records_found() => Err(format!(
+            "the resolver gave an empty answer for {name} with no SOA, so it may be filtering TXT records"
+        )),
         Err(e) => Err(format!("DNS lookup of {name} failed: {e}")),
     }
 }
 
-/// The HTTP key, read as http.go reads it: no redirects, 200 only, at most
-/// 4096 bytes, trimmed. `Ok(None)` for a 404 (nothing published).
-async fn http_key(domain: &str) -> Result<Option<String>, String> {
-    let url = format!("https://{domain}/.well-known/mcp-registry-auth");
-    let client = reqwest::Client::builder()
+/// Addresses the registry refuses to fetch from (http.go `isBlockedIP`):
+/// loopback, private (RFC 1918, ULA), link-local, multicast, unspecified,
+/// CGNAT (100.64.0.0/10), and the IPv6 ranges that embed an IPv4 address or
+/// route to a site (6to4, NAT64, site-local). IPv4-mapped IPv6 is judged as
+/// its IPv4 address.
+fn is_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_blocked_v4(v4),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_blocked_v4(v4),
+            None => is_blocked_v6(v6),
+        },
+    }
+}
+
+fn is_blocked_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_unspecified()
+        || (a == 100 && (64..128).contains(&b))
+}
+
+fn is_blocked_v6(ip: Ipv6Addr) -> bool {
+    let s = ip.segments();
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || (s[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
+        || (s[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+        || (s[0] & 0xffc0) == 0xfec0 // site-local fec0::/10
+        || s[0] == 0x2002 // 6to4 2002::/16
+        || s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] // NAT64 64:ff9b::/96
+        || s[..3] == [0x64, 0xff9b, 1] // NAT64 local-use 64:ff9b:1::/48
+}
+
+/// The client the key is fetched with: the registry's `Accept: text/plain`,
+/// a 10-second budget for the whole fetch, and no redirects.
+fn key_client() -> reqwest::ClientBuilder {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("text/plain"),
+    );
+    reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        .default_headers(headers)
         .timeout(Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
+}
+
+/// The HTTP key, read as http.go reads it: public addresses only, no
+/// redirects, 200 only, at most 4096 bytes, trimmed. `Ok(None)` for a 404
+/// (nothing published).
+async fn http_key(domain: &str) -> Result<Option<String>, String> {
+    let url = format!("https://{domain}/.well-known/mcp-registry-auth");
+    let resolved: Vec<SocketAddr> = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::lookup_host((domain, 443)),
+    )
+    .await
+    .map_err(|_| format!("{url}: looking up {domain} timed out"))?
+    .map_err(|e| format!("{url}: {e}"))?
+    .collect();
+    let public: Vec<SocketAddr> = resolved
+        .iter()
+        .copied()
+        .filter(|a| !is_blocked_ip(a.ip()))
+        .collect();
+    if public.is_empty() {
+        return Err(format!(
+            "{domain} resolves only to private or loopback addresses, which the registry refuses to fetch from"
+        ));
+    }
+    // Connect only to the addresses just checked, as the registry pins its dial.
+    let client = key_client()
+        .resolve_to_addrs(domain, &public)
         .build()
         .map_err(|e| e.to_string())?;
+    read_key(&client, &url).await
+}
+
+/// One fetch of a key URL with the registry's status and size rules.
+async fn read_key(client: &reqwest::Client, url: &str) -> Result<Option<String>, String> {
     let mut resp = client
-        .get(&url)
+        .get(url)
         .send()
         .await
-        .map_err(|e| format!("{url}: {e}"))?;
+        .map_err(|e| format!("{url}: {}", with_causes(&e)))?;
     let status = resp.status().as_u16();
     if status == 404 {
         return Ok(None);
@@ -222,7 +339,11 @@ async fn http_key(domain: &str) -> Result<Option<String>, String> {
         ));
     }
     let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("{url}: {e}"))? {
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("{url}: {}", with_causes(&e)))?
+    {
         body.extend_from_slice(&chunk);
         if body.len() > MAX_KEY_RESPONSE {
             return Err(format!(
@@ -307,8 +428,16 @@ pub async fn check_namespace_login(namespace: &str, r: &mut Report) {
         }
     }
 
-    // HTTP: only the exact domain (no subdomain grant).
-    match http_key(&domain).await {
+    // HTTP: only the exact domain (no subdomain grant), and only a domain
+    // the registry accepts for `login http`.
+    let fetched = if is_valid_domain(&domain) {
+        http_key(&domain).await
+    } else {
+        Err(format!(
+            "{domain} isn't a domain the registry accepts for `login http`"
+        ))
+    };
+    match fetched {
         Err(why) => problems.push(format!("HTTP: {why}")),
         Ok(None) => {}
         Ok(Some(body)) => match evaluate(&[body]) {
@@ -345,7 +474,9 @@ pub async fn check_namespace_login(namespace: &str, r: &mut Report) {
 
 /// The namespace login's verdict. A problem with one method (DNS or HTTP)
 /// fails the check only when no method proves the namespace: once one does,
-/// the other's problems are information.
+/// the other's problems are information. When DNS couldn't be read, a key the
+/// tool can't see may still prove it, so nothing is a failure: it's a warning
+/// with every reason.
 fn verdict(
     namespace: &str,
     domain: &str,
@@ -364,16 +495,18 @@ fn verdict(
             "Preflight checks the published key, not your private key: if publish says the signature doesn't verify, compare the fingerprint above with your key's".to_string(),
         ));
         out
-    } else if !problems.is_empty() {
-        problems.into_iter().map(|p| (Status::Fail, p)).collect()
     } else if !unchecked.is_empty() {
-        vec![(
-            Status::Fail,
+        let mut out = vec![(
+            Status::Warn,
             format!(
-                "namespace {namespace}: couldn't confirm a published key ({}), so the login isn't checked",
+                "namespace {namespace}: couldn't read DNS ({}), so a published key may be there unseen and the login isn't confirmed",
                 unchecked.join("; ")
             ),
-        )]
+        )];
+        out.extend(problems.into_iter().map(|p| (Status::Warn, p)));
+        out
+    } else if !problems.is_empty() {
+        problems.into_iter().map(|p| (Status::Fail, p)).collect()
     } else {
         vec![(
             Status::Fail,
@@ -411,7 +544,7 @@ mod tests {
             vec![],
         );
         assert_eq!(v, vec![(Status::Fail, http_redirect()[0].clone())]);
-        // nothing found, nothing checked → the unchecked reason fails
+        // DNS couldn't be read → a warning, never a failure
         let v = verdict(
             "com.example",
             "example.com",
@@ -420,7 +553,19 @@ mod tests {
             vec![],
             vec!["DNS lookup of example.com timed out".into()],
         );
-        assert!(v[0].0 == Status::Fail && v[0].1.contains("couldn't confirm"));
+        assert!(v.len() == 1 && v[0].0 == Status::Warn && v[0].1.contains("timed out"));
+        // DNS couldn't be read and HTTP failed (no network) → both reasons, as warnings
+        let v = verdict(
+            "com.example",
+            "example.com",
+            "example.com",
+            false,
+            http_redirect(),
+            vec!["DNS lookup of example.com timed out".into()],
+        );
+        assert_eq!(v.len(), 2, "{v:?}");
+        assert!(v.iter().all(|(s, _)| *s == Status::Warn), "{v:?}");
+        assert!(v[0].1.contains("timed out") && v[1].1.contains("HTTP 301"));
         // nothing found at all → what to add, and where
         let v = verdict(
             "com.example.api",
@@ -561,5 +706,146 @@ mod tests {
         assert!(is_github_pages(&domain_of("io.github.you")));
         assert!(!is_valid_domain("127.0.0.1"));
         assert!(!is_valid_domain("localhost"));
+    }
+
+    #[test]
+    fn a_hostile_algorithm_name_is_printed_escaped_and_short() {
+        let err = parse_key("\u{1b}[2J\u{1b}]0;owned\u{7}", ED).unwrap_err();
+        assert!(!err.contains('\u{1b}') && !err.contains('\u{7}'), "{err:?}");
+        assert!(err.contains("\\u{1b}[2J"), "{err:?}");
+        let err = parse_key(&"a".repeat(500), ED).unwrap_err();
+        assert!(err.len() < 100 && err.ends_with("..."), "{err}");
+    }
+
+    #[test]
+    fn private_addresses_are_refused_as_the_registry_refuses_them() {
+        let blocked = [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "100.127.255.255",
+            "0.0.0.0",
+            "224.0.0.1",
+            "::1",
+            "::",
+            "fd00::1",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+            "2002:a00:1::",
+            "64:ff9b::a00:1",
+            "64:ff9b:1::1",
+            "::ffff:10.0.0.1",
+            "::ffff:127.0.0.1",
+        ];
+        for ip in blocked {
+            assert!(is_blocked_ip(ip.parse().unwrap()), "{ip} should be refused");
+        }
+        let public = [
+            "93.184.215.14",
+            "100.63.255.255",
+            "100.128.0.1",
+            "172.32.0.1",
+            "2606:4700::1111",
+            "::ffff:8.8.8.8",
+        ];
+        for ip in public {
+            assert!(!is_blocked_ip(ip.parse().unwrap()), "{ip} is public");
+        }
+    }
+
+    /// A one-response HTTP server on 127.0.0.1; returns its base URL and the
+    /// last request it received.
+    async fn serve(response: String) -> (String, std::sync::Arc<std::sync::Mutex<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let seen_by_server = seen.clone();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let mut req = Vec::new();
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    req.extend_from_slice(&buf[..n]);
+                }
+                *seen_by_server.lock().unwrap() = String::from_utf8_lossy(&req).into_owned();
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        (format!("http://{addr}/.well-known/mcp-registry-auth"), seen)
+    }
+
+    fn response(status: &str, extra: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n{body}",
+            body.len()
+        )
+    }
+
+    #[tokio::test]
+    async fn http_key_follows_the_registrys_status_size_and_redirect_rules() {
+        let client = key_client().build().unwrap();
+        let record = format!("v=MCPv1; k=ed25519; p={ED}");
+
+        // 200: trimmed, and the registry's Accept header was sent
+        let (url, seen) = serve(response("200 OK", "", &format!("\n  {record} \n"))).await;
+        assert_eq!(read_key(&client, &url).await, Ok(Some(record.clone())));
+        assert!(
+            seen.lock()
+                .unwrap()
+                .to_lowercase()
+                .contains("accept: text/plain"),
+            "no Accept: text/plain"
+        );
+        // exactly 4096 bytes is read; one more is refused
+        let at_cap = format!("{record}{}", " ".repeat(MAX_KEY_RESPONSE - record.len()));
+        let (url, _) = serve(response("200 OK", "", &at_cap)).await;
+        assert_eq!(read_key(&client, &url).await, Ok(Some(record.clone())));
+        let (url, _) = serve(response("200 OK", "", &format!("{at_cap} "))).await;
+        assert!(
+            read_key(&client, &url)
+                .await
+                .unwrap_err()
+                .contains("over 4096 bytes")
+        );
+        // 404: nothing published
+        let (url, _) = serve(response("404 Not Found", "", "")).await;
+        assert_eq!(read_key(&client, &url).await, Ok(None));
+        // a redirect is reported, not followed
+        let (url, _) = serve(response(
+            "301 Moved Permanently",
+            "Location: https://elsewhere.example/key\r\n",
+            "",
+        ))
+        .await;
+        assert!(
+            read_key(&client, &url)
+                .await
+                .unwrap_err()
+                .contains("redirect")
+        );
+        // any other status fails
+        let (url, _) = serve(response("406 Not Acceptable", "", "")).await;
+        assert!(
+            read_key(&client, &url)
+                .await
+                .unwrap_err()
+                .contains("HTTP 406")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_domain_on_a_private_address_is_refused_before_fetching() {
+        let err = http_key("localhost").await.unwrap_err();
+        assert!(err.contains("private or loopback"), "{err}");
     }
 }
