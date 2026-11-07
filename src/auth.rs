@@ -18,6 +18,7 @@ use base64::Engine as _;
 use base64::alphabet;
 use base64::engine::{GeneralPurpose, GeneralPurposeConfig};
 use hickory_resolver::TokioResolver;
+use hickory_resolver::net::NetError;
 use hickory_resolver::proto::rr::RData;
 use regex::Regex;
 
@@ -172,8 +173,13 @@ fn fingerprints(keys: &[Key]) -> String {
 /// escaped (no terminal escapes reach the user or an MCP client) and at most
 /// 40 characters.
 fn printable(s: &str) -> String {
-    let shown: String = s.chars().take(40).flat_map(char::escape_debug).collect();
-    if s.chars().count() > 40 {
+    escaped(s, 40)
+}
+
+/// `s` with control characters escaped, cut to `max` characters.
+fn escaped(s: &str, max: usize) -> String {
+    let shown: String = s.chars().take(max).flat_map(char::escape_debug).collect();
+    if s.chars().count() > max {
         format!("{shown}...")
     } else {
         shown
@@ -181,7 +187,8 @@ fn printable(s: &str) -> String {
 }
 
 /// An error and its causes, one after another: reqwest's own message
-/// ("error sending request") leaves out why.
+/// ("error sending request") leaves out why. Escaped, since a TLS error can
+/// quote a certificate's names.
 fn with_causes(e: &dyn std::error::Error) -> String {
     let mut out = e.to_string();
     let mut cause = e.source();
@@ -193,7 +200,7 @@ fn with_causes(e: &dyn std::error::Error) -> String {
         }
         cause = c.source();
     }
-    out
+    escaped(&out, 300)
 }
 
 /// A TXT lookup: the record strings (each record's strings joined, as Go's
@@ -221,16 +228,24 @@ async fn txt(
                 _ => None,
             })
             .collect()),
-        Err(e) if e.is_nx_domain() => Ok(Vec::new()),
-        // A real "no records" answer carries the zone's SOA (RFC 2308). An
-        // empty answer without one comes from a filtering or broken resolver,
-        // so it says nothing about the record.
-        Err(e) if e.is_no_records_found() && e.clone().into_soa().is_some() => Ok(Vec::new()),
-        Err(e) if e.is_no_records_found() => Err(format!(
-            "the resolver gave an empty answer for {name} with no SOA, so it may be filtering TXT records"
-        )),
-        Err(e) => Err(format!("DNS lookup of {name} failed: {e}")),
+        Err(e) => lookup_error(&e, name),
     }
+}
+
+/// What a failed TXT lookup means. A real "no records" answer (NODATA or
+/// NXDOMAIN) carries the zone's SOA (RFC 2308) and means no record. One
+/// without an SOA comes from a filtering or broken resolver, so it says
+/// nothing about the record.
+fn lookup_error(e: &NetError, name: &str) -> Result<Vec<String>, String> {
+    if !e.is_no_records_found() {
+        return Err(format!("DNS lookup of {name} failed: {e}"));
+    }
+    if e.clone().into_soa().is_some() {
+        return Ok(Vec::new());
+    }
+    Err(format!(
+        "the resolver answered for {name} with no records and no SOA, so it may be filtering TXT records"
+    ))
 }
 
 /// Addresses the registry refuses to fetch from (http.go `isBlockedIP`):
@@ -283,25 +298,39 @@ fn key_client() -> reqwest::ClientBuilder {
         .user_agent(USER_AGENT)
         .default_headers(headers)
         .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(3))
         .redirect(reqwest::redirect::Policy::none())
+        // A proxy would resolve the domain itself, past the address check.
+        .no_proxy()
 }
 
-/// The HTTP key, read as http.go reads it: public addresses only, no
-/// redirects, 200 only, at most 4096 bytes, trimmed. `Ok(None)` for a 404
-/// (nothing published).
+/// The HTTP key, read as http.go reads it: a valid domain, public addresses
+/// only, one 10-second budget for the lookup and the fetch, no redirects, 200
+/// only, at most 4096 bytes, trimmed. `Ok(None)` for a 404 (nothing
+/// published).
 async fn http_key(domain: &str) -> Result<Option<String>, String> {
+    if !is_valid_domain(domain) {
+        return Err(format!(
+            "{domain} isn't a domain the registry accepts for `login http`"
+        ));
+    }
     let url = format!("https://{domain}/.well-known/mcp-registry-auth");
-    let resolved: Vec<SocketAddr> = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::net::lookup_host((domain, 443)),
-    )
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let resolved: Vec<SocketAddr> = tokio::net::lookup_host((domain, 443))
+            .await
+            .map_err(|e| format!("{url}: {}", with_causes(&e)))?
+            .collect();
+        let public = public_addrs(domain, resolved)?;
+        read_key(&pinned_client(domain, &public)?, &url).await
+    })
     .await
-    .map_err(|_| format!("{url}: looking up {domain} timed out"))?
-    .map_err(|e| format!("{url}: {e}"))?
-    .collect();
+    .map_err(|_| format!("{url}: no answer within 10 seconds"))?
+}
+
+/// The addresses the registry would dial, or why there are none.
+fn public_addrs(domain: &str, resolved: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
     let public: Vec<SocketAddr> = resolved
-        .iter()
-        .copied()
+        .into_iter()
         .filter(|a| !is_blocked_ip(a.ip()))
         .collect();
     if public.is_empty() {
@@ -309,12 +338,16 @@ async fn http_key(domain: &str) -> Result<Option<String>, String> {
             "{domain} resolves only to private or loopback addresses, which the registry refuses to fetch from"
         ));
     }
-    // Connect only to the addresses just checked, as the registry pins its dial.
-    let client = key_client()
-        .resolve_to_addrs(domain, &public)
+    Ok(public)
+}
+
+/// The key client, connecting to `domain` only at `addrs` (the addresses just
+/// checked), as the registry pins its dial.
+fn pinned_client(domain: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, String> {
+    key_client()
+        .resolve_to_addrs(domain, addrs)
         .build()
-        .map_err(|e| e.to_string())?;
-    read_key(&client, &url).await
+        .map_err(|e| e.to_string())
 }
 
 /// One fetch of a key URL with the registry's status and size rules.
@@ -430,14 +463,7 @@ pub async fn check_namespace_login(namespace: &str, r: &mut Report) {
 
     // HTTP: only the exact domain (no subdomain grant), and only a domain
     // the registry accepts for `login http`.
-    let fetched = if is_valid_domain(&domain) {
-        http_key(&domain).await
-    } else {
-        Err(format!(
-            "{domain} isn't a domain the registry accepts for `login http`"
-        ))
-    };
-    match fetched {
+    match http_key(&domain).await {
         Err(why) => problems.push(format!("HTTP: {why}")),
         Ok(None) => {}
         Ok(Some(body)) => match evaluate(&[body]) {
@@ -474,9 +500,9 @@ pub async fn check_namespace_login(namespace: &str, r: &mut Report) {
 
 /// The namespace login's verdict. A problem with one method (DNS or HTTP)
 /// fails the check only when no method proves the namespace: once one does,
-/// the other's problems are information. When DNS couldn't be read, a key the
-/// tool can't see may still prove it, so nothing is a failure: it's a warning
-/// with every reason.
+/// the other's problems are information. Nothing proven is always a failure,
+/// since the publish could fail; when DNS couldn't be read the failure says
+/// the login wasn't checked and to run again, with every reason.
 fn verdict(
     namespace: &str,
     domain: &str,
@@ -497,13 +523,13 @@ fn verdict(
         out
     } else if !unchecked.is_empty() {
         let mut out = vec![(
-            Status::Warn,
+            Status::Fail,
             format!(
-                "namespace {namespace}: couldn't read DNS ({}), so a published key may be there unseen and the login isn't confirmed",
+                "namespace {namespace}: login not checked: couldn't read DNS ({}). Run again, or from another network, before you publish",
                 unchecked.join("; ")
             ),
         )];
-        out.extend(problems.into_iter().map(|p| (Status::Warn, p)));
+        out.extend(problems.into_iter().map(|p| (Status::Fail, p)));
         out
     } else if !problems.is_empty() {
         problems.into_iter().map(|p| (Status::Fail, p)).collect()
@@ -544,7 +570,7 @@ mod tests {
             vec![],
         );
         assert_eq!(v, vec![(Status::Fail, http_redirect()[0].clone())]);
-        // DNS couldn't be read → a warning, never a failure
+        // DNS couldn't be read → still a failure (never "Ready"), saying to run again
         let v = verdict(
             "com.example",
             "example.com",
@@ -553,8 +579,9 @@ mod tests {
             vec![],
             vec!["DNS lookup of example.com timed out".into()],
         );
-        assert!(v.len() == 1 && v[0].0 == Status::Warn && v[0].1.contains("timed out"));
-        // DNS couldn't be read and HTTP failed (no network) → both reasons, as warnings
+        assert!(v.len() == 1 && v[0].0 == Status::Fail, "{v:?}");
+        assert!(v[0].1.contains("timed out") && v[0].1.contains("Run again"));
+        // DNS couldn't be read and HTTP failed (no network) → both reasons, failing
         let v = verdict(
             "com.example",
             "example.com",
@@ -564,7 +591,7 @@ mod tests {
             vec!["DNS lookup of example.com timed out".into()],
         );
         assert_eq!(v.len(), 2, "{v:?}");
-        assert!(v.iter().all(|(s, _)| *s == Status::Warn), "{v:?}");
+        assert!(v.iter().all(|(s, _)| *s == Status::Fail), "{v:?}");
         assert!(v[0].1.contains("timed out") && v[1].1.contains("HTTP 301"));
         // nothing found at all → what to add, and where
         let v = verdict(
@@ -843,9 +870,75 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_domain_on_a_private_address_is_refused_before_fetching() {
-        let err = http_key("localhost").await.unwrap_err();
+    #[test]
+    fn a_domain_on_a_private_address_is_refused_before_fetching() {
+        let addr = |a: &str| a.parse::<SocketAddr>().unwrap();
+        let err = public_addrs(
+            "example.com",
+            vec![addr("127.0.0.1:443"), addr("[fd00::1]:443")],
+        )
+        .unwrap_err();
         assert!(err.contains("private or loopback"), "{err}");
+        // a mixed answer keeps only the public address, as the registry dials it
+        assert_eq!(
+            public_addrs(
+                "example.com",
+                vec![addr("10.0.0.1:443"), addr("93.184.215.14:443")]
+            ),
+            Ok(vec![addr("93.184.215.14:443")])
+        );
+    }
+
+    #[test]
+    fn an_empty_answer_counts_as_no_record_only_with_an_soa() {
+        use hickory_resolver::net::NoRecords;
+        use hickory_resolver::proto::op::{Query, ResponseCode};
+        use hickory_resolver::proto::rr::rdata::SOA;
+        use hickory_resolver::proto::rr::{Name, Record};
+        for code in [ResponseCode::NoError, ResponseCode::NXDomain] {
+            let bare = NoRecords::new(Query::new(), code);
+            let msg = lookup_error(&NetError::from(bare.clone()), "example.com").unwrap_err();
+            assert!(msg.contains("no SOA"), "{code:?}: {msg}");
+            let mut with_soa = bare;
+            with_soa.soa = Some(Box::new(Record::from_rdata(
+                Name::root(),
+                60,
+                SOA::new(Name::root(), Name::root(), 1, 1, 1, 1, 1),
+            )));
+            assert_eq!(
+                lookup_error(&NetError::from(with_soa), "example.com"),
+                Ok(Vec::new()),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_invalid_domain_is_refused_before_any_lookup() {
+        let err = http_key("-bad.example").await.unwrap_err();
+        assert!(err.contains("isn't a domain the registry accepts"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_key_is_fetched_only_from_the_checked_addresses() {
+        // `pinned.invalid` doesn't resolve: the fetch reaches the test server
+        // only because the client is pinned to its address.
+        let (url, _) = serve(response("200 OK", "", "pinned")).await;
+        let addr: SocketAddr = url
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let client = pinned_client("pinned.invalid", &[addr]).unwrap();
+        let pinned = format!(
+            "http://pinned.invalid:{}/.well-known/mcp-registry-auth",
+            addr.port()
+        );
+        assert_eq!(
+            read_key(&client, &pinned).await,
+            Ok(Some("pinned".to_string()))
+        );
     }
 }
