@@ -6,6 +6,7 @@
 use rmcp::ServiceExt;
 use tracing_subscriber::EnvFilter;
 
+mod auth;
 mod checks;
 mod server;
 mod token;

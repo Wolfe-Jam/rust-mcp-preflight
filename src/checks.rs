@@ -13,7 +13,7 @@ use crate::token;
 
 const CRATES_IO: &str = "https://crates.io";
 const REGISTRY: &str = "https://registry.modelcontextprotocol.io";
-const USER_AGENT: &str = concat!(
+pub(crate) const USER_AGENT: &str = concat!(
     "rust-mcp-preflight/",
     env!("CARGO_PKG_VERSION"),
     " (https://github.com/Wolfe-Jam/rust-mcp-preflight)"
@@ -45,7 +45,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn push(&mut self, status: Status, msg: impl Into<String>) {
+    pub(crate) fn push(&mut self, status: Status, msg: impl Into<String>) {
         self.lines.push((status, msg.into()));
     }
     pub fn failed(&self) -> bool {
@@ -587,10 +587,7 @@ pub async fn check_name(server_name: &str) -> Report {
             ),
         }
     } else {
-        r.push(
-            Status::Info,
-            format!("namespace {ns}: prove the domain with `mcp-publisher login dns` (or http)"),
-        );
+        crate::auth::check_namespace_login(ns, &mut r).await;
     }
 
     match find_listing(&http, server_name).await {
