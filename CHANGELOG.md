@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 (2026-11-06)
+## 0.2.0 (2026-11-07)
 
 The namespace login check: for a domain namespace, is the key published where the registry will look, and will it accept it?
 
