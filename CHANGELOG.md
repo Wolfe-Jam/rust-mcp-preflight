@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Live integration tests (`tests/live.rs`): the built binary, through the CLI and over MCP stdio, against crates.io, the MCP Registry, the GitHub users API, DNS and HTTPS. Fixtures that don't change: published crate versions (final on crates.io) and `example.com` (reserved, RFC 2606). Ignored by default, so `cargo test` stays offline; `cargo test --test live -- --include-ignored` runs them, and the `Live` workflow runs them every Monday and by hand. Each live test was shown to fail with the behaviour it checks broken.
+
 ## 0.2.0 (2026-11-07)
 
 The namespace login check: for a domain namespace, is the key published where the registry will look, and will it accept it?
