@@ -5,6 +5,8 @@ name: Release binaries
 # targets are missing). Never on push or pull request. It builds one binary per
 # target and attaches it, with a SHA-256 file, to that release. Asset names match
 # [package.metadata.binstall] in Cargo.toml. An asset already attached is never replaced.
+# Each archive it attaches, and the binary inside, gets a signed build provenance
+# attestation: `gh attestation verify <file> --repo Wolfe-Jam/rust-mcp-preflight`.
 on:
   release:
     types: [published]
@@ -23,6 +25,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write # gh release upload
+      id-token: write # sign the attestation (Sigstore, through GitHub's OIDC token)
+      attestations: write # store the attestation on this repository
     strategy:
       fail-fast: false
       matrix:
@@ -86,14 +90,30 @@ jobs:
           cat "$asset.sha256"
           echo "ASSET=$asset" >> "$GITHUB_ENV"
 
-      # The token is only in this step's environment, never in cargo build (build.rs, proc macros).
-      - name: Upload to the release
+      # The token is only in these steps' environment, never in cargo build (build.rs, proc macros).
+      # Never replace an asset someone may already have downloaded. A rebuild isn't
+      # byte-identical, so an asset already attached also gets no new attestation.
+      - name: Already attached?
+        id: attached
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Never replace an asset someone may already have downloaded.
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx "$ASSET"; then
             echo "$ASSET is already attached to $TAG: left as it is"
-          else
-            gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --repo "$GITHUB_REPOSITORY"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
+
+      # Pinned by SHA: this job holds a write token.
+      - name: Attest build provenance
+        if: steps.attached.outputs.skip != 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ env.ASSET }}
+            dist/rust-mcp-preflight*
+
+      - name: Upload to the release
+        if: steps.attached.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --repo "$GITHUB_REPOSITORY"
