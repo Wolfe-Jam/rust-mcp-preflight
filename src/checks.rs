@@ -111,10 +111,19 @@ fn transient(status: u16) -> bool {
     status == 429 || (500..600).contains(&status)
 }
 
+/// Whether a status from static.crates.io means "no README, or no such
+/// version", so crates.io must be asked which. The registry asks on a 403,
+/// which static.crates.io gave for both. Since 2026-11-11 it answers 404 for
+/// both instead (seen by a run of the live tests), so ask on that too, or a
+/// missing version loses "cargo publish first".
+fn asks_crates_io(status: u16) -> bool {
+    status == 403 || status == 404
+}
+
 /// What to say when static.crates.io has no README for the version (`status`
 /// 403 or 404), given what the version lookup answered (`None`: crates.io
-/// couldn't be reached). The four outcomes of the registry's
-/// cargoReadme403Error.
+/// couldn't be reached). The outcomes of the registry's cargoReadme403Error,
+/// with "couldn't confirm" split into a temporary error and no connection.
 fn no_readme_message(
     status: u16,
     exists: Option<u16>,
@@ -124,7 +133,7 @@ fn no_readme_message(
 ) -> String {
     match exists {
         Some(200) => format!(
-            "{crate_name} {version} exists on crates.io, but its rendered README couldn't be retrieved ({status}). If it has no README, add one containing `mcp-name: {server_name}` and publish a new version"
+            "{crate_name} {version} exists on crates.io, but its rendered README couldn't be retrieved ({status}). If you just published, wait a minute and run again; if it has no README, add one containing `mcp-name: {server_name}` and publish a new version"
         ),
         Some(404) => {
             format!("{crate_name} {version} not found on crates.io: cargo publish first, then list")
@@ -466,11 +475,8 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
         }
     };
     let status = resp.status().as_u16();
-    if status == 403 || status == 404 {
-        // No README, or no such version: ask crates.io which. The registry asks
-        // on a 403, which static.crates.io gave for both. Since 2026-11-11 (seen
-        // by the live tests) it answers 404 for a missing version, so ask on
-        // that too, or the user loses "cargo publish first".
+    if asks_crates_io(status) {
+        // No README, or no such version: ask crates.io which.
         let probe = format!("{CRATES_IO}/api/v1/crates/{id}/{ver}");
         let exists = http
             .get(&probe)
@@ -856,6 +862,15 @@ fn org_namespace_warning(owner: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn crates_io_is_asked_on_403_and_404_only() {
+        assert!(asks_crates_io(403));
+        assert!(asks_crates_io(404));
+        for status in [200, 410, 429, 500, 503] {
+            assert!(!asks_crates_io(status), "{status}");
+        }
+    }
+
     #[test]
     fn a_missing_readme_is_explained_by_the_version_lookup_on_403_and_404() {
         let msg = |status, exists| no_readme_message(status, exists, "c", "1.0.0", "io.github.o/c");
