@@ -1,0 +1,27 @@
+# What Preflight ports from modelcontextprotocol/registry, and the registry
+# commit it was last checked against. This is the one place the pin lives.
+# .github/registry-drift.sh compares each file at that commit with the
+# registry's main, and checks each issue is still open. When one changes, read
+# the change, update the port if it needs it, then move the commit here
+# (the full 40-character SHA: GitHub fetches only those).
+
+commit c9fe19bdf021b2dd18236e3f5b464afb69c51b30
+
+# path                                            ported in
+internal/validators/registries/cargo.go           src/checks.rs  (the README check)
+internal/validators/registries/mcpname.go         src/token.rs   (the mcp-name match)
+internal/validators/validators.go                 src/token.rs, src/checks.rs  (name, version, package and transport rules)
+internal/validators/schema.go                     src/checks.rs  ($schema: required, version readable)
+internal/validators/utils.go                      src/checks.rs  (templated URLs)
+internal/api/handlers/v0/auth/common.go           src/auth.rs    (record, keys, permissions)
+internal/api/handlers/v0/auth/dns.go              src/auth.rs    (TXT lookup, wrong selectors)
+internal/api/handlers/v0/auth/http.go             src/auth.rs    (the .well-known fetch)
+internal/api/handlers/v0/auth/github_oidc.go      src/checks.rs  (the org guidance: what OIDC grants)
+internal/api/handlers/v0/auth/github_at.go        src/checks.rs  (the org guidance: Owners only, token scopes)
+internal/auth/jwt.go                              src/auth.rs    (which names a login covers)
+cmd/publisher/auth/github-at.go                   src/checks.rs  (the org guidance: login github and orgs)
+cmd/publisher/commands/init.go                    src/checks.rs  (the init placeholders, the npm entry)
+docs/modelcontextprotocol-io/authentication.mdx   src/checks.rs  (the page the org guidance links)
+
+# issue  number                                   relied on in
+issue    1468                                     src/checks.rs  (login github can't publish to org namespaces yet)

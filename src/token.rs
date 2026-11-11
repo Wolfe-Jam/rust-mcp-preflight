@@ -1,9 +1,10 @@
 //! The `mcp-name:` ownership token, matched the way the registry matches it.
 //!
 //! Ported from modelcontextprotocol/registry
-//! `internal/validators/registries/mcpname.go` (commit 04623ed, 2026-06-05),
-//! shared there by the PyPI, NuGet and Cargo validators. A README this module
-//! accepts is one the registry accepts.
+//! `internal/validators/registries/mcpname.go`, shared there by the PyPI,
+//! NuGet and Cargo validators. A README this module accepts is one the
+//! registry accepts. The registry commit it was checked against, and every
+//! file ported, are in `.github/registry-port.txt`.
 
 /// Why a server name would be refused at publish, or `None` if it's fine.
 ///
