@@ -1,0 +1,22 @@
+name: Registry drift
+
+# Fails when the MCP Registry changes a file Preflight ports
+# (.github/registry-port.txt), so a rule change is caught here before a user
+# gets a wrong answer. Weekly; also by hand.
+# GitHub turns off schedule triggers after 60 days with no repository
+# activity: if the weekly run stops, re-enable it in the Actions tab.
+on:
+  schedule:
+    - cron: "47 9 * * 1" # Mondays 09:47 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash .github/registry-drift.sh
