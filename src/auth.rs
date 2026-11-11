@@ -5,7 +5,9 @@
 //! Ported from the registry's auth handlers
 //! (`internal/api/handlers/v0/auth/`): `common.go` (record pattern, key
 //! parsing, permissions), `dns.go` (apex TXT lookup, wrong-selector probe) and
-//! `http.go` (`/.well-known/mcp-registry-auth`, no redirects, 4096-byte cap).
+//! `http.go` (`/.well-known/mcp-registry-auth`, no redirects, 4096-byte cap),
+//! plus `internal/auth/jwt.go` (which names a login covers). The registry
+//! commit it was checked against is in `.github/registry-port.txt`.
 //!
 //! It reads the published key only. It can't check that your private key
 //! matches it, so it prints each key's fingerprint the way the registry does
