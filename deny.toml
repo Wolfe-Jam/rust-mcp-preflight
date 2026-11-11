@@ -1,0 +1,29 @@
+# cargo-deny (https://embarkstudios.github.io/cargo-deny/): run by the
+# Dependencies workflow, or locally with `cargo deny check`.
+
+[advisories]
+# Every RustSec advisory for a crate in Cargo.lock fails the check, including
+# unmaintained and unsound ones. An exception goes here with its ID and why.
+ignore = []
+
+[licenses]
+# The licences this crate's dependencies use today, each one compatible with
+# shipping an MIT binary. A new licence fails the check until it's read and added.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+# crates.io only: no other registry, no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"

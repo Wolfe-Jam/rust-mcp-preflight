@@ -1,0 +1,28 @@
+name: Dependencies
+
+# cargo-deny against deny.toml: security advisories (RustSec), licences,
+# crate sources and banned crates, for every crate in Cargo.lock. On every pull
+# request and push to main, and weekly, because a new advisory can land against
+# a dependency that hasn't changed.
+# GitHub turns off schedule triggers after 60 days with no repository
+# activity: if the weekly run stops, re-enable it in the Actions tab.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "7 10 * * 1" # Mondays 10:07 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
