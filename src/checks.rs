@@ -111,6 +111,45 @@ fn transient(status: u16) -> bool {
     status == 429 || (500..600).contains(&status)
 }
 
+/// Whether a status from static.crates.io means "no README, or no such
+/// version", so crates.io must be asked which. The registry asks on a 403,
+/// which static.crates.io gave for both. Since 2026-11-11 it answers 404 for
+/// both instead (seen by a run of the live tests), so ask on that too, or a
+/// missing version loses "cargo publish first".
+fn asks_crates_io(status: u16) -> bool {
+    status == 403 || status == 404
+}
+
+/// What to say when static.crates.io has no README for the version (`status`
+/// 403 or 404), given what the version lookup answered (`None`: crates.io
+/// couldn't be reached). The outcomes of the registry's cargoReadme403Error,
+/// with "couldn't confirm" split into a temporary error and no connection.
+fn no_readme_message(
+    status: u16,
+    exists: Option<u16>,
+    crate_name: &str,
+    version: &str,
+    server_name: &str,
+) -> String {
+    match exists {
+        Some(200) => format!(
+            "{crate_name} {version} exists on crates.io, but its rendered README couldn't be retrieved ({status}). If you just published, wait a minute and run again; if it has no README, add one containing `mcp-name: {server_name}` and publish a new version"
+        ),
+        Some(404) => {
+            format!("{crate_name} {version} not found on crates.io: cargo publish first, then list")
+        }
+        Some(s) if transient(s) => format!(
+            "README not checked: crates.io couldn't confirm {crate_name} {version} ({s}). Likely temporary: run again before you publish"
+        ),
+        None => format!(
+            "README not checked: couldn't reach crates.io to confirm {crate_name} {version}. Run again before you publish"
+        ),
+        Some(s) => format!(
+            "{crate_name} {version} not found on crates.io (README {status}, version lookup {s})"
+        ),
+    }
+}
+
 // ─── server.json (offline) ──────────────────────────────────────────────
 
 /// Checks a server.json's text against the registry's rules for cargo
@@ -436,38 +475,20 @@ pub async fn check_readme(crate_name: &str, version: &str, server_name: &str) ->
         }
     };
     let status = resp.status().as_u16();
-    if status == 403 {
-        // Like the registry: a 403 means no README, or no such version. Ask which.
+    if asks_crates_io(status) {
+        // No README, or no such version: ask crates.io which.
         let probe = format!("{CRATES_IO}/api/v1/crates/{id}/{ver}");
         let exists = http
             .get(&probe)
             .header("Accept", "application/json")
             .send()
             .await
-            .map(|r| r.status().as_u16());
-        // The four outcomes of the registry's cargoReadme403Error.
-        match exists {
-            Ok(200) => r.push(
-                Status::Fail,
-                format!("{crate_name} {version} exists on crates.io, but its rendered README couldn't be retrieved (403). If it has no README, add one containing `mcp-name: {server_name}` and publish a new version"),
-            ),
-            Ok(404) => r.push(
-                Status::Fail,
-                format!("{crate_name} {version} not found on crates.io: cargo publish first, then list"),
-            ),
-            Ok(s) if transient(s) => r.push(
-                Status::Fail,
-                format!("README not checked: crates.io couldn't confirm {crate_name} {version} ({s}). Likely temporary: run again before you publish"),
-            ),
-            Err(_) => r.push(
-                Status::Fail,
-                format!("README not checked: couldn't reach crates.io to confirm {crate_name} {version}. Run again before you publish"),
-            ),
-            Ok(s) => r.push(
-                Status::Fail,
-                format!("{crate_name} {version} not found on crates.io (README 403, version lookup {s})"),
-            ),
-        }
+            .map(|r| r.status().as_u16())
+            .ok();
+        r.push(
+            Status::Fail,
+            no_readme_message(status, exists, crate_name, version, server_name),
+        );
         return r;
     }
     if status != 200 {
@@ -841,6 +862,39 @@ fn org_namespace_warning(owner: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn crates_io_is_asked_on_403_and_404_only() {
+        assert!(asks_crates_io(403));
+        assert!(asks_crates_io(404));
+        for status in [200, 410, 429, 500, 503] {
+            assert!(!asks_crates_io(status), "{status}");
+        }
+    }
+
+    #[test]
+    fn a_missing_readme_is_explained_by_the_version_lookup_on_403_and_404() {
+        let msg = |status, exists| no_readme_message(status, exists, "c", "1.0.0", "io.github.o/c");
+        for status in [403, 404] {
+            assert_eq!(
+                msg(status, Some(404)),
+                "c 1.0.0 not found on crates.io: cargo publish first, then list"
+            );
+            assert!(msg(status, Some(200)).starts_with(&format!(
+                "c 1.0.0 exists on crates.io, but its rendered README couldn't be retrieved ({status})"
+            )));
+            assert!(msg(status, Some(200)).contains("`mcp-name: io.github.o/c`"));
+            assert!(
+                msg(status, Some(503))
+                    .starts_with("README not checked: crates.io couldn't confirm c 1.0.0 (503)")
+            );
+            assert!(msg(status, None).starts_with("README not checked: couldn't reach crates.io"));
+            assert_eq!(
+                msg(status, Some(410)),
+                format!("c 1.0.0 not found on crates.io (README {status}, version lookup 410)")
+            );
+        }
+    }
+
     #[test]
     fn org_warning_names_both_paths_that_work() {
         let w = org_namespace_warning("acme");
