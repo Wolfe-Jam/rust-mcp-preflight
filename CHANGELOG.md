@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Live integration tests (`tests/live.rs`): the built binary, through the CLI and over MCP stdio, against crates.io, the MCP Registry, the GitHub users API, DNS and HTTPS. Fixtures that don't change: published crate versions (final on crates.io) and `example.com` (reserved, RFC 2606). Ignored by default, so `cargo test` stays offline; `cargo test --test live -- --include-ignored` runs them, and the `Live` workflow runs them every Monday and by hand. Each live test was shown to fail with the behaviour it checks broken.
+- Live integration tests (`tests/live.rs`): the built binary, through the CLI and over MCP stdio, against crates.io, the MCP Registry, the GitHub users API, DNS and HTTPS. Fixtures that don't change: published crate versions (final on crates.io) and `example.com` (reserved, RFC 2606). Ignored by default, so `cargo test` stays offline; `cargo test --locked --test live -- --include-ignored` runs them with the offline one, and the `Live` workflow runs them every Monday and by hand (15-minute limit). When DNS can't be read, the two namespace tests run again up to twice, as Preflight's own message says to. Every test was shown to fail with the behaviour it checks broken (7 mutations: the README matcher both ways, a 404 crate version, DNS keys ignored, a missing key reported as INFO, the org guidance without the OIDC command, a tool not read-only).
 
 ## 0.2.0 (2026-11-07)
 

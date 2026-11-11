@@ -3,8 +3,9 @@
 //! through the CLI and over MCP stdio, as a user runs it.
 //!
 //! They need the network, so they're ignored by default and `cargo test`
-//! stays offline. Run them with `cargo test --locked -- --ignored`; the
-//! weekly `live` workflow does. Fixtures are chosen not to change: published
+//! stays offline. Run them, with the offline one, using
+//! `cargo test --locked --test live -- --include-ignored`; the weekly `Live`
+//! workflow does. Fixtures are chosen not to change: published
 //! crate versions are final on crates.io, and `example.com` is reserved
 //! (RFC 2606).
 
@@ -37,12 +38,16 @@ fn server_json(name: &str, crate_name: &str, version: &str) -> String {
 
 /// Runs the CLI on `server_json`; returns its exit code and stdout.
 fn cli(server_json: &str) -> (i32, String) {
-    let dir = std::env::temp_dir().join(format!("preflight-live-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "preflight-live-{}-{:x}",
+        std::process::id(),
+        fnv(server_json)
+    ));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(format!("{:x}.json", fnv(server_json)));
+    let path = dir.join("server.json");
     std::fs::write(&path, server_json).unwrap();
     let out = Command::new(BIN).arg(&path).output().unwrap();
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir_all(&dir);
     (
         out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -123,6 +128,22 @@ fn tool(name: &str, arguments: Value) -> (bool, String) {
     )
 }
 
+/// `check_name` for a domain namespace. When DNS can't be read, Preflight
+/// fails with "login not checked … Run again"; this does what that says, up
+/// to twice, so one resolver hiccup doesn't fail the weekly run. Any other
+/// result is returned as it is.
+fn check_namespace(server_name: &str) -> (bool, String) {
+    let mut result = tool("check_name", json!({ "server_name": server_name }));
+    for _ in 0..2 {
+        if !result.1.contains("login not checked") {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(5));
+        result = tool("check_name", json!({ "server_name": server_name }));
+    }
+    result
+}
+
 #[test]
 #[ignore = "live: crates.io, the MCP Registry, GitHub"]
 fn a_listed_server_with_its_readme_line_is_ready() {
@@ -183,7 +204,7 @@ fn an_unpublished_crate_version_fails() {
 fn a_domain_namespace_without_a_key_fails_with_what_to_add() {
     // example.com is reserved (RFC 2606): no MCPv1 record, and its
     // .well-known URL answers 404.
-    let (is_error, text) = tool("check_name", json!({"server_name": "com.example/widget"}));
+    let (is_error, text) = check_namespace("com.example/widget");
     assert!(is_error, "{text}");
     assert!(
         text.contains(
@@ -197,10 +218,7 @@ fn a_domain_namespace_without_a_key_fails_with_what_to_add() {
 #[ignore = "live: DNS"]
 fn a_domain_namespace_with_a_dns_key_passes() {
     // faf.one publishes an Ed25519 MCPv1 TXT record (the maintainer's domain).
-    let (is_error, text) = tool(
-        "check_name",
-        json!({"server_name": "one.faf/claude-faf-mcp"}),
-    );
+    let (is_error, text) = check_namespace("one.faf/claude-faf-mcp");
     assert!(!is_error, "{text}");
     assert!(
         text.contains(
@@ -245,7 +263,11 @@ fn the_preflight_tool_matches_the_cli() {
         "0.2.0",
     );
     let (is_error, out) = tool("preflight", json!({"server_json": text}));
-    assert!(!is_error, "{out}");
+    let (code, cli_out) = cli(&text);
+    assert!(!is_error && code == 0, "{out}\n{cli_out}");
+    // The same report, past the title line (the CLI's names the file).
+    let body = |s: &str| s.lines().skip(1).collect::<Vec<_>>().join("\n");
+    assert_eq!(body(&out), body(&cli_out));
     assert!(out.contains("Ready: no failures"), "{out}");
 }
 
