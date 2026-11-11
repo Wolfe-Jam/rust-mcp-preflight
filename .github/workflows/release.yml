@@ -1,9 +1,12 @@
 name: Release binaries
 
 # Runs when a GitHub release is published, or by hand for an existing release
-# (e.g. when a runner image was retired and some targets are missing): start it
-# from the tag, `gh workflow run release.yml --ref v<version>`, so the tag's own
-# workflow runs and the attestation names the tag. Never on push or pull request.
+# after a temporary failure (a flaky runner, a network error, a failed upload):
+# start it from the tag, `gh workflow run release.yml --ref v<version>`, so the
+# tag's own workflow runs and the attestation names the tag. That copy can't be
+# changed, so a retired runner image or a toolchain change needs a new patch
+# release. Tags before v0.2.1 have the old workflow: `-f tag=v<version>`, and
+# no attestation. Never on push or pull request.
 # It builds one binary per target and attaches it, with a SHA-256 file, to that
 # release. Asset names match [package.metadata.binstall] in Cargo.toml. An asset
 # already attached is never replaced.
@@ -39,6 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The same five targets as publish's matrix: change both together.
         include:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
@@ -113,6 +117,7 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 7
+          overwrite: true # "Re-run all jobs" uploads the same name again in this run
 
   publish:
     name: publish ${{ matrix.target }}
@@ -127,12 +132,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The same five targets as build's matrix: change both together.
         include:
-          - { target: x86_64-unknown-linux-gnu, ext: tar.gz }
-          - { target: aarch64-unknown-linux-gnu, ext: tar.gz }
-          - { target: x86_64-apple-darwin, ext: tar.gz }
-          - { target: aarch64-apple-darwin, ext: tar.gz }
-          - { target: x86_64-pc-windows-msvc, ext: zip }
+          - { target: x86_64-unknown-linux-gnu, ext: tar.gz, bin: rust-mcp-preflight }
+          - { target: aarch64-unknown-linux-gnu, ext: tar.gz, bin: rust-mcp-preflight }
+          - { target: x86_64-apple-darwin, ext: tar.gz, bin: rust-mcp-preflight }
+          - { target: aarch64-apple-darwin, ext: tar.gz, bin: rust-mcp-preflight }
+          - { target: x86_64-pc-windows-msvc, ext: zip, bin: rust-mcp-preflight.exe }
     env:
       ASSET: rust-mcp-preflight-${{ github.event.release.tag_name || github.ref_name }}-${{ matrix.target }}.${{ matrix.ext }}
       GH_TOKEN: ${{ github.token }}
@@ -143,9 +149,28 @@ jobs:
           name: release-${{ matrix.target }}
           path: out
 
-      - name: Archive matches its SHA-256
+      # Only the three files publish expects, so nothing else gets attested, and a
+      # .sha256 that describes this archive (by name and hash), as cargo binstall reads it.
+      - name: Artifact is the archive, its SHA-256 and the binary
         working-directory: out
-        run: sha256sum -c "$ASSET.sha256"
+        env:
+          BIN: ${{ matrix.bin }}
+        run: |
+          expected=$(printf '%s\n' "$ASSET" "$ASSET.sha256" "bin/$BIN" | sort)
+          actual=$(find . -type f | sed 's|^\./||' | sort)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::the build artifact holds other files than $ASSET, its .sha256 and bin/$BIN:"
+            printf '%s\n' "$actual"
+            exit 1
+          fi
+          read -r hash name < "$ASSET.sha256"
+          name=${name%$'\r'}
+          name=${name#\*} # Git Bash on Windows writes "*name" (binary mode)
+          if [ "$(wc -l < "$ASSET.sha256")" -ne 1 ] || [ "$name" != "$ASSET" ] \
+            || [ "$hash" != "$(sha256sum "$ASSET" | cut -d' ' -f1)" ]; then
+            echo "::error::$ASSET.sha256 doesn't describe $ASSET: $(cat "$ASSET.sha256")"
+            exit 1
+          fi
 
       # Never replace an asset someone may already have downloaded. A rebuild isn't
       # byte-identical, so an asset already attached also gets no new attestation.
@@ -169,7 +194,7 @@ jobs:
         with:
           subject-path: |
             out/${{ env.ASSET }}
-            out/bin/rust-mcp-preflight*
+            out/bin/${{ matrix.bin }}
 
       - name: Upload to the release
         if: steps.attached.outputs.skip != 'true'
