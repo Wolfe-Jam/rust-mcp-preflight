@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- CI checks every workflow with actionlint and shellcheck (prebuilt, pinned by version and SHA-256): expressions, permissions, action inputs and the shell in each `run:` step, so the release, weekly and by-hand workflows can't break unseen before they run.
 - The crate description (the line under the title on crates.io), the MCP Registry description (`server.json`) and the business card (`agent.fafa`) name the namespace login check, new in 0.2.0, which they had left out.
 
 ## 0.2.1 (2026-11-12)
