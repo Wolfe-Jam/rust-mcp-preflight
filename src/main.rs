@@ -77,6 +77,7 @@ mod readme_tests {
     const README: &str = include_str!("../README.md");
 
     /// The README with `\n` line endings: a Windows checkout has `\r\n`.
+    /// Every test reads the README through this, never `README` itself.
     fn readme() -> String {
         README.replace("\r\n", "\n")
     }
@@ -125,7 +126,8 @@ mod readme_tests {
 
     #[test]
     fn readme_vs_code_add_mcp_argument_parses() {
-        let line = README
+        let readme = readme();
+        let line = readme
             .lines()
             .find(|l| l.starts_with("code --add-mcp '"))
             .expect("README has the code --add-mcp line");
@@ -139,8 +141,9 @@ mod readme_tests {
 
     #[test]
     fn readme_cli_clients_run_this_binary() {
-        assert!(README.contains("claude mcp add preflight -- rust-mcp-preflight"));
-        assert!(README.contains("goose session --with-extension \"rust-mcp-preflight\""));
+        let readme = readme();
+        assert!(readme.contains("claude mcp add preflight -- rust-mcp-preflight"));
+        assert!(readme.contains("goose session --with-extension \"rust-mcp-preflight\""));
         let yaml = fenced("yaml").concat();
         assert!(
             yaml.contains("cmd: rust-mcp-preflight"),
