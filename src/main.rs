@@ -76,14 +76,21 @@ mod readme_tests {
     // every JSON snippet must parse and every client must start this binary.
     const README: &str = include_str!("../README.md");
 
-    fn fenced(lang: &str) -> Vec<&'static str> {
+    /// The README with `\n` line endings: a Windows checkout has `\r\n`.
+    /// Every test reads the README through this, never `README` itself.
+    fn readme() -> String {
+        README.replace("\r\n", "\n")
+    }
+
+    fn fenced(lang: &str) -> Vec<String> {
+        let readme = readme();
         let open = format!("```{lang}\n");
         let mut out = Vec::new();
-        let mut rest = README;
+        let mut rest = readme.as_str();
         while let Some(i) = rest.find(&open) {
             let body = &rest[i + open.len()..];
             let end = body.find("\n```").expect("unclosed code fence in README");
-            out.push(&body[..end]);
+            out.push(body[..end].to_string());
             rest = &body[end..];
         }
         out
@@ -100,7 +107,7 @@ mod readme_tests {
             blocks.len() >= 2,
             "expected the VS Code and Cursor snippets"
         );
-        for block in blocks {
+        for block in &blocks {
             let v: serde_json::Value = serde_json::from_str(block)
                 .unwrap_or_else(|e| panic!("README JSON doesn't parse ({e}):\n{block}"));
             let servers = v.get("servers").or_else(|| v.get("mcpServers"));
@@ -119,7 +126,8 @@ mod readme_tests {
 
     #[test]
     fn readme_vs_code_add_mcp_argument_parses() {
-        let line = README
+        let readme = readme();
+        let line = readme
             .lines()
             .find(|l| l.starts_with("code --add-mcp '"))
             .expect("README has the code --add-mcp line");
@@ -133,8 +141,9 @@ mod readme_tests {
 
     #[test]
     fn readme_cli_clients_run_this_binary() {
-        assert!(README.contains("claude mcp add preflight -- rust-mcp-preflight"));
-        assert!(README.contains("goose session --with-extension \"rust-mcp-preflight\""));
+        let readme = readme();
+        assert!(readme.contains("claude mcp add preflight -- rust-mcp-preflight"));
+        assert!(readme.contains("goose session --with-extension \"rust-mcp-preflight\""));
         let yaml = fenced("yaml").concat();
         assert!(
             yaml.contains("cmd: rust-mcp-preflight"),
