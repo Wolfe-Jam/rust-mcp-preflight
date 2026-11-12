@@ -1,0 +1,18 @@
+# cargo-about (https://embarkstudios.github.io/cargo-about/): writes
+# THIRD-PARTY-LICENSES.md, the licence of every crate in the release binaries.
+# Regenerate after any Cargo.lock change (and every version bump: the file
+# names this crate's version):
+#   cargo fetch --locked && cargo about generate --frozen --fail about.hbs -o THIRD-PARTY-LICENSES.md
+# The Dependencies workflow fails if the committed file is out of date.
+# The same licences deny.toml allows.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+# Only what ships in the binaries.
+ignore-dev-dependencies = true
+ignore-build-dependencies = true

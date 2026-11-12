@@ -1,9 +1,11 @@
 name: Dependencies
 
 # cargo-deny against deny.toml: security advisories (RustSec), licences,
-# crate sources and banned crates, for every crate in Cargo.lock. On every pull
-# request and push to main, and weekly, because a new advisory can land against
-# a dependency that hasn't changed.
+# crate sources and banned crates, for every crate in Cargo.lock. And
+# THIRD-PARTY-LICENSES.md (packed into every release archive) must match what
+# cargo-about generates from Cargo.lock. On every pull request and push to
+# main, and weekly, because a new advisory can land against a dependency that
+# hasn't changed.
 # GitHub turns off schedule triggers after 60 days with no repository
 # activity: if the weekly run stops, re-enable it in the Actions tab.
 on:
@@ -29,3 +31,24 @@ jobs:
       # today). If a dependency ever needs a newer cargo, this goes red, not green:
       # then run `cargo install --locked cargo-deny` on dtolnay/rust-toolchain instead.
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+
+  licences:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-about@0.9.3
+      # Offline after the fetch, so the file comes only from the crates themselves.
+      - name: THIRD-PARTY-LICENSES.md is up to date
+        run: |
+          cargo fetch --locked
+          cargo about generate --frozen --fail about.hbs -o "$RUNNER_TEMP/licences.md"
+          if ! diff -u THIRD-PARTY-LICENSES.md "$RUNNER_TEMP/licences.md"; then
+            echo "::error::THIRD-PARTY-LICENSES.md is out of date: run cargo fetch --locked && cargo about generate --frozen --fail about.hbs -o THIRD-PARTY-LICENSES.md"
+            exit 1
+          fi
