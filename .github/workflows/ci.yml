@@ -30,3 +30,41 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+
+  actionlint:
+    # Checks every workflow (expressions, permissions, action inputs) and, with
+    # shellcheck, the shell in each run: step. Release, schedule and dispatch
+    # workflows otherwise only fail when they run. Both tools are prebuilt
+    # release binaries, pinned by version and SHA-256.
+    # To bump: change the version, then take the SHA-256 from
+    #   actionlint: actionlint_<v>_checksums.txt on its release page;
+    #   shellcheck: the asset's "sha256:" digest on its release page. shellcheck
+    #   publishes no checksums file, so that pin is trust-on-first-use.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ACTIONLINT: "1.7.12"
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      SHELLCHECK: "0.11.0"
+      SHELLCHECK_SHA256: b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install actionlint and shellcheck
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT/actionlint_${ACTIONLINT}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  actionlint.tar.gz" | sha256sum -c -
+          curl -fsSLo shellcheck.tar.gz "https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK/shellcheck-v$SHELLCHECK.linux.x86_64.tar.gz"
+          echo "$SHELLCHECK_SHA256  shellcheck.tar.gz" | sha256sum -c -
+          mkdir -p bin
+          tar -xzf actionlint.tar.gz -C bin actionlint
+          tar -xzf shellcheck.tar.gz --strip-components=1 -C bin "shellcheck-v$SHELLCHECK/shellcheck"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: actionlint
+        run: |
+          # When its shell checker is missing (even at a named path), actionlint
+          # skips that check silently: assert the pinned binary runs first.
+          "$RUNNER_TEMP/bin/shellcheck" --version | grep -qx "version: $SHELLCHECK"
+          actionlint -color -shellcheck "$RUNNER_TEMP/bin/shellcheck" -pyflakes=
