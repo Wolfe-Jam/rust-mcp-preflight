@@ -1,0 +1,68 @@
+# cargo-about (https://embarkstudios.github.io/cargo-about/): writes
+# THIRD-PARTY-LICENSES.md, the licence of every crate in the release binaries.
+# Regenerate after any Cargo.lock change (and every version bump: the file
+# names this crate's version):
+#   cargo fetch --locked && cargo about generate --frozen --fail about.hbs -o THIRD-PARTY-LICENSES.md
+# The Dependencies workflow fails if the committed file is out of date.
+# The same licences deny.toml allows.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+]
+# Only what ships in the binaries: no dev or build dependencies, and only the
+# five release targets (the matrices in .github/workflows/release.yml: change
+# all three together).
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+# chrono's LICENSE.txt combines MIT and Apache-2.0, which cargo-about doesn't
+# recognise on its own; this built-in workaround finds its real notice.
+workarounds = ["chrono"]
+
+# windows-rs ships its MIT text (with "Copyright (c) Microsoft Corporation.")
+# indented, so it isn't recognised and the generic template would be used.
+# Point at the file; the checksum makes a changed file fail, not fall back.
+[windows-link.clarify]
+license = "MIT OR Apache-2.0"
+[[windows-link.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-registry.clarify]
+license = "MIT OR Apache-2.0"
+[[windows-registry.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-result.clarify]
+license = "MIT OR Apache-2.0"
+[[windows-result.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-strings.clarify]
+license = "MIT OR Apache-2.0"
+[[windows-strings.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+
+[windows-sys.clarify]
+license = "MIT OR Apache-2.0"
+[[windows-sys.clarify.files]]
+path = "license-mit"
+license = "MIT"
+checksum = "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"

@@ -43,7 +43,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The same five targets as publish's matrix: change both together.
+        # The same five targets as publish's matrix and about.toml's targets:
+        # change all three together.
         include:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
@@ -93,15 +94,15 @@ jobs:
         run: |
           name="rust-mcp-preflight-$TAG-$TARGET"
           mkdir -p dist out/bin
-          cp README.md LICENSE dist/
+          cp README.md LICENSE THIRD-PARTY-LICENSES.md dist/
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp "target/$TARGET/release/rust-mcp-preflight.exe" dist/
             asset="$name.zip"
-            (cd dist && 7z a "../out/$asset" rust-mcp-preflight.exe README.md LICENSE)
+            (cd dist && 7z a "../out/$asset" rust-mcp-preflight.exe README.md LICENSE THIRD-PARTY-LICENSES.md)
           else
             cp "target/$TARGET/release/rust-mcp-preflight" dist/
             asset="$name.tar.gz"
-            tar -czf "out/$asset" -C dist rust-mcp-preflight README.md LICENSE
+            tar -czf "out/$asset" -C dist rust-mcp-preflight README.md LICENSE THIRD-PARTY-LICENSES.md
           fi
           cp dist/rust-mcp-preflight* out/bin/
           cd out
@@ -137,7 +138,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The same five targets as build's matrix: change both together.
+        # The same five targets as build's matrix and about.toml's targets:
+        # change all three together.
         include:
           - { target: x86_64-unknown-linux-gnu, ext: tar.gz, bin: rust-mcp-preflight }
           - { target: aarch64-unknown-linux-gnu, ext: tar.gz, bin: rust-mcp-preflight }
