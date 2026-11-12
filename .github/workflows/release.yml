@@ -5,8 +5,9 @@ name: Release binaries
 # start it from the tag, `gh workflow run release.yml --ref v<version>`, so the
 # tag's own workflow runs and the attestation names the tag. That copy can't be
 # changed, so a retired runner image or a toolchain change needs a new patch
-# release. Tags before v0.2.1 have the old workflow: `-f tag=v<version>`, and
-# no attestation. Never on push or pull request.
+# release. Tags before v0.2.1 have the old workflow and no attestation:
+# `gh workflow run release.yml --ref v0.2.0 -f tag=v0.2.0`. Never on push or
+# pull request.
 # It builds one binary per target and attaches it, with a SHA-256 file, to that
 # release. Asset names match [package.metadata.binstall] in Cargo.toml. An asset
 # already attached is never replaced.
@@ -117,7 +118,11 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 7
-          overwrite: true # "Re-run all jobs" uploads the same name again in this run
+          # "Re-run all jobs" uploads the same name again in this run. The name has no
+          # attempt number on purpose: "Re-run failed jobs" re-runs a failed publish
+          # with the artifact an earlier attempt built. Those bytes were built in this
+          # run, from the tag, by the tag's workflow, so the attestation still holds.
+          overwrite: true
 
   publish:
     name: publish ${{ matrix.target }}
@@ -163,7 +168,7 @@ jobs:
             printf '%s\n' "$actual"
             exit 1
           fi
-          read -r hash name < "$ASSET.sha256"
+          read -r hash name < "$ASSET.sha256" || true # empty, or no final newline: refused below
           name=${name%$'\r'}
           name=${name#\*} # Git Bash on Windows writes "*name" (binary mode)
           if [ "$(wc -l < "$ASSET.sha256")" -ne 1 ] || [ "$name" != "$ASSET" ] \
