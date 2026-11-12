@@ -25,4 +25,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      # The action runs cargo 1.85 in its own image (below this crate's MSRV, 1.88; fine
+      # today). If a dependency ever needs a newer cargo, this goes red, not green:
+      # then run `cargo install --locked cargo-deny` on dtolnay/rust-toolchain instead.
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1

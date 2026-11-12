@@ -1,35 +1,49 @@
 name: Release binaries
 
 # Runs when a GitHub release is published, or by hand for an existing release
-# (workflow_dispatch with its tag, e.g. when a runner image was retired and some
-# targets are missing). Never on push or pull request. It builds one binary per
-# target and attaches it, with a SHA-256 file, to that release. Asset names match
-# [package.metadata.binstall] in Cargo.toml. An asset already attached is never replaced.
+# after a temporary failure (a flaky runner, a network error, a failed upload):
+# start it from the tag, `gh workflow run release.yml --ref v<version>`, so the
+# tag's own workflow runs and the attestation names the tag. That copy can't be
+# changed, so a retired runner image or a toolchain change needs a new patch
+# release. Tags before v0.2.1 have the old workflow and no attestation:
+# `gh workflow run release.yml --ref v0.2.0 -f tag=v0.2.0`. Never on push or
+# pull request.
+# It builds one binary per target and attaches it, with a SHA-256 file, to that
+# release. Asset names match [package.metadata.binstall] in Cargo.toml. An asset
+# already attached is never replaced.
 # Each archive it attaches, and the binary inside, gets a signed build provenance
-# attestation: `gh attestation verify <file> --repo Wolfe-Jam/rust-mcp-preflight`.
+# attestation. To check a download:
+#   gh attestation verify <file> --repo Wolfe-Jam/rust-mcp-preflight \
+#     --source-ref refs/tags/v<version> \
+#     --signer-workflow Wolfe-Jam/rust-mcp-preflight/.github/workflows/release.yml
+# Two jobs: `build` compiles with a read-only token and nothing that can sign;
+# `publish` holds the write, signing and attestation permissions and runs no
+# project code.
 on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing release tag to build for, e.g. v0.1.3"
-        required: true
 
 permissions:
   contents: read
 
+env:
+  TAG: ${{ github.event.release.tag_name || github.ref_name }}
+
+# One run per tag at a time: two runs could both pass the "already attached"
+# check and attach different builds.
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    name: ${{ matrix.target }}
+    name: build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write # gh release upload
-      id-token: write # sign the attestation (Sigstore, through GitHub's OIDC token)
-      attestations: write # store the attestation on this repository
     strategy:
       fail-fast: false
       matrix:
+        # The same five targets as publish's matrix: change both together.
         include:
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-24.04 }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-24.04-arm }
@@ -39,16 +53,21 @@ jobs:
           - { target: aarch64-apple-darwin, os: macos-15 }
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
       TARGET: ${{ matrix.target }}
     defaults:
       run:
         shell: bash
     steps:
-      # Pinned by SHA: this job holds a write token.
+      # The attestation records the ref the run started from, so it must be the tag.
+      - name: Started from the tag
+        run: |
+          if [ "$GITHUB_REF" != "refs/tags/$TAG" ]; then
+            echo "::error::start a rebuild from the release tag, not $GITHUB_REF: gh workflow run release.yml --ref v<version>"
+            exit 1
+          fi
+
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
           persist-credentials: false # the build never needs the token in .git/config
 
       # cargo binstall builds the URL from the crate version, so the tag must be v<version>.
@@ -68,52 +87,120 @@ jobs:
       - name: Build
         run: cargo build --release --locked --target "$TARGET"
 
+      # out/ holds what publish needs: the archive, its SHA-256 file, and the
+      # binary exactly as packed (bin/), to attest.
       - name: Package
         run: |
           name="rust-mcp-preflight-$TAG-$TARGET"
-          mkdir -p dist
+          mkdir -p dist out/bin
           cp README.md LICENSE dist/
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp "target/$TARGET/release/rust-mcp-preflight.exe" dist/
             asset="$name.zip"
-            (cd dist && 7z a "../$asset" rust-mcp-preflight.exe README.md LICENSE)
+            (cd dist && 7z a "../out/$asset" rust-mcp-preflight.exe README.md LICENSE)
           else
             cp "target/$TARGET/release/rust-mcp-preflight" dist/
             asset="$name.tar.gz"
-            tar -czf "$asset" -C dist rust-mcp-preflight README.md LICENSE
+            tar -czf "out/$asset" -C dist rust-mcp-preflight README.md LICENSE
           fi
+          cp dist/rust-mcp-preflight* out/bin/
+          cd out
           if command -v sha256sum >/dev/null; then
             sha256sum "$asset" > "$asset.sha256"
           else
             shasum -a 256 "$asset" > "$asset.sha256"
           fi
           cat "$asset.sha256"
-          echo "ASSET=$asset" >> "$GITHUB_ENV"
 
-      # The token is only in these steps' environment, never in cargo build (build.rs, proc macros).
-      # Never replace an asset someone may already have downloaded. A rebuild isn't
-      # byte-identical, so an asset already attached also gets no new attestation.
-      - name: Already attached?
-        id: attached
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.target }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 7
+          # "Re-run all jobs" uploads the same name again in this run. The name has no
+          # attempt number on purpose: "Re-run failed jobs" re-runs a failed publish
+          # with the artifact an earlier attempt built. Those bytes were built in this
+          # run, from the tag, by the tag's workflow, so the attestation still holds.
+          overwrite: true
+
+  publish:
+    name: publish ${{ matrix.target }}
+    needs: build
+    # Each target on its own, as before: one failed build doesn't hold back the others.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release upload
+      id-token: write # sign the attestation (Sigstore, through GitHub's OIDC token)
+      attestations: write # store the attestation on this repository
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same five targets as build's matrix: change both together.
+        include:
+          - { target: x86_64-unknown-linux-gnu, ext: tar.gz, bin: rust-mcp-preflight }
+          - { target: aarch64-unknown-linux-gnu, ext: tar.gz, bin: rust-mcp-preflight }
+          - { target: x86_64-apple-darwin, ext: tar.gz, bin: rust-mcp-preflight }
+          - { target: aarch64-apple-darwin, ext: tar.gz, bin: rust-mcp-preflight }
+          - { target: x86_64-pc-windows-msvc, ext: zip, bin: rust-mcp-preflight.exe }
+    env:
+      ASSET: rust-mcp-preflight-${{ github.event.release.tag_name || github.ref_name }}-${{ matrix.target }}.${{ matrix.ext }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # Pinned by SHA: this job holds a write token. No checkout: it runs no project code.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ matrix.target }}
+          path: out
+
+      # Only the three files publish expects, so nothing else gets attested, and a
+      # .sha256 that describes this archive (by name and hash), as cargo binstall reads it.
+      - name: Artifact is the archive, its SHA-256 and the binary
+        working-directory: out
         env:
-          GH_TOKEN: ${{ github.token }}
+          BIN: ${{ matrix.bin }}
         run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -qx "$ASSET"; then
-            echo "$ASSET is already attached to $TAG: left as it is"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+          expected=$(printf '%s\n' "$ASSET" "$ASSET.sha256" "bin/$BIN" | sort)
+          actual=$(find . -type f | sed 's|^\./||' | sort)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::the build artifact holds other files than $ASSET, its .sha256 and bin/$BIN:"
+            printf '%s\n' "$actual"
+            exit 1
+          fi
+          read -r hash name < "$ASSET.sha256" || true # empty, or no final newline: refused below
+          name=${name%$'\r'}
+          name=${name#\*} # Git Bash on Windows writes "*name" (binary mode)
+          if [ "$(wc -l < "$ASSET.sha256")" -ne 1 ] || [ "$name" != "$ASSET" ] \
+            || [ "$hash" != "$(sha256sum "$ASSET" | cut -d' ' -f1)" ]; then
+            echo "::error::$ASSET.sha256 doesn't describe $ASSET: $(cat "$ASSET.sha256")"
+            exit 1
           fi
 
-      # Pinned by SHA: this job holds a write token.
+      # Never replace an asset someone may already have downloaded. A rebuild isn't
+      # byte-identical, so an asset already attached also gets no new attestation.
+      # Only one of the two attached means an earlier run stopped halfway: fix by hand.
+      - name: Already attached?
+        id: attached
+        run: |
+          names=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          has() { printf '%s\n' "$names" | grep -qxF "$1"; }
+          if has "$ASSET" && has "$ASSET.sha256"; then
+            echo "$ASSET and its .sha256 are already attached to $TAG: left as they are"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif has "$ASSET" || has "$ASSET.sha256"; then
+            echo "::error::only one of $ASSET and $ASSET.sha256 is attached to $TAG: delete it by hand, then run again from the tag"
+            exit 1
+          fi
+
       - name: Attest build provenance
         if: steps.attached.outputs.skip != 'true'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            ${{ env.ASSET }}
-            dist/rust-mcp-preflight*
+            out/${{ env.ASSET }}
+            out/bin/${{ matrix.bin }}
 
       - name: Upload to the release
         if: steps.attached.outputs.skip != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG" "out/$ASSET" "out/$ASSET.sha256" --repo "$GITHUB_REPOSITORY"
