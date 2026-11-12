@@ -36,6 +36,10 @@ jobs:
     # shellcheck, the shell in each run: step. Release, schedule and dispatch
     # workflows otherwise only fail when they run. Both tools are prebuilt
     # release binaries, pinned by version and SHA-256.
+    # To bump: change the version, then take the SHA-256 from
+    #   actionlint: actionlint_<v>_checksums.txt on its release page;
+    #   shellcheck: the asset's "sha256:" digest on its release page. shellcheck
+    #   publishes no checksums file, so that pin is trust-on-first-use.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -60,5 +64,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: actionlint
         run: |
-          shellcheck --version | sed -n 2p
-          actionlint -color
+          # When its shell checker is missing (even at a named path), actionlint
+          # skips that check silently: assert the pinned binary runs first.
+          "$RUNNER_TEMP/bin/shellcheck" --version | grep -qx "version: $SHELLCHECK"
+          actionlint -color -shellcheck "$RUNNER_TEMP/bin/shellcheck" -pyflakes=
