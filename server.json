@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Wolfe-Jam/rust-mcp-preflight",
   "title": "Rust MCP Preflight",
-  "description": "Check an MCP Registry listing before you publish: README mcp-name line, server.json, name.",
+  "description": "Check an MCP Registry listing before you publish: README line, server.json, name, namespace login.",
   "repository": {
     "url": "https://github.com/Wolfe-Jam/rust-mcp-preflight",
     "source": "github"
