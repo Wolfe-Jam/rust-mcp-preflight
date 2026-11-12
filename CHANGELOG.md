@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The crate description (the line under the title on crates.io), the MCP Registry description (`server.json`) and the business card (`agent.fafa`) name the namespace login check, new in 0.2.0, which they had left out.
+
 ## 0.2.1 (2026-11-12)
 
 Release hardening: signed binaries, licence notices, a dependency audit, and the not-found message back after a crates.io change.
