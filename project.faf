@@ -26,11 +26,11 @@ stack:
   storage: slotignored
 human_context:
   who: Developers listing an MCP server in the official MCP Registry, starting with Rust servers on crates.io
-  what: Check an MCP Registry listing before you publish it.
+  what: "Run the registry's publish checks before publishing: server.json, the crates.io README line, the server name and its namespace login"
   why: mcp-publisher validate checks the shape of server.json, not ownership; the README check only runs at publish, after the crate version is final
-  where: Locally over stdio in an MCP client, or as a CLI in a terminal or CI; reads crates.io, registry.modelcontextprotocol.io and the GitHub users API
-  when: Before every mcp-publisher publish, after cargo publish
-  how: cargo install rust-mcp-preflight, then rust-mcp-preflight server.json (or claude mcp add preflight -- rust-mcp-preflight)
+  where: On a developer's machine or in CI, as a CLI or a stdio MCP server; reads crates.io, the MCP Registry, the GitHub users API and a domain's DNS TXT and .well-known key
+  when: In use since November 2026; checked every week against the live services and the registry's own rules
+  how: Ports the registry's own validators and login checks from its Go source and runs them against the live services, so it decides as the registry would
 monorepo:
   packages_count: slotignored
   build_orchestrator: slotignored
