@@ -1,0 +1,50 @@
+# Dependabot opens the update PRs; a person finishes and merges them.
+# Minor and patch updates come grouped, once a month per ecosystem; a major
+# update arrives as its own PR. Security advisories are checked weekly by
+# cargo-deny (deny.yml), and Dependabot security updates are on in settings.
+# A new release is offered only after 5 days (cooldown), so a hijacked
+# release has time to be pulled first.
+#
+# Not seen by Dependabot, bumped by hand: actionlint and shellcheck (version
+# and SHA-256 in ci.yml), cargo-about (deny.yml).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 5
+    commit-message:
+      prefix: deps
+    groups:
+      cargo:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    # Any version change also changes THIRD-PARTY-LICENSES.md, so the
+    # required licences job fails until it is regenerated on the PR branch,
+    # after Dependabot's last rebase (a rebase drops the hand commit):
+    #   cargo fetch --locked && cargo about generate --frozen --fail about.hbs -o THIRD-PARTY-LICENSES.md
+    # The required msrv job (Rust 1.88) fails if an update needs a newer Rust.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 5
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # @1.88 is the MSRV and @stable a channel, not versions to bump; the
+      # SHA-pinned copy in release.yml is moved by hand with the date.
+      - dependency-name: dtolnay/rust-toolchain
+      # Used only in release.yml, which CI never runs: bump them by hand
+      # with a release, so a change shows up in a run that is watched.
+      - dependency-name: actions/upload-artifact
+      - dependency-name: actions/download-artifact
+      - dependency-name: actions/attest-build-provenance
