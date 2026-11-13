@@ -30,7 +30,7 @@ Or download the binary for your platform from the [release assets](https://githu
 From 0.2.1, each archive also holds `THIRD-PARTY-LICENSES.md` (the licence notices of every crate built in) and comes with a signed build provenance attestation. To check that a download was built by this repository's release workflow from its tag:
 
 ```sh
-gh attestation verify <file> --repo Wolfe-Jam/rust-mcp-preflight --source-ref refs/tags/v0.2.1 --signer-workflow Wolfe-Jam/rust-mcp-preflight/.github/workflows/release.yml
+gh attestation verify <file> --repo Wolfe-Jam/rust-mcp-preflight --source-ref refs/tags/v0.2.2 --signer-workflow Wolfe-Jam/rust-mcp-preflight/.github/workflows/release.yml
 ```
 
 ## Use it from a terminal or CI

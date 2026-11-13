@@ -44,6 +44,8 @@ key_files:
   - src/main.rs
   - src/checks.rs
   - src/token.rs
+  - src/auth.rs
+  - src/server.rs
   - README.md
 commands:
   build: cargo build --release

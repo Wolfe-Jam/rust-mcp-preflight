@@ -21,8 +21,9 @@ updates:
       cargo:
         patterns: ["*"]
         update-types: [minor, patch]
-    # Any version change also changes THIRD-PARTY-LICENSES.md, so the
-    # required licences job fails until it is regenerated on the PR branch,
+    # A version change usually changes THIRD-PARTY-LICENSES.md (not when the
+    # new version is already in the lockfile), and then the required licences
+    # job fails until it is regenerated on the PR branch,
     # after Dependabot's last rebase (a rebase drops the hand commit):
     #   cargo fetch --locked && cargo about generate --frozen --fail about.hbs -o THIRD-PARTY-LICENSES.md
     # The required msrv job (Rust 1.88) fails if an update needs a newer Rust.

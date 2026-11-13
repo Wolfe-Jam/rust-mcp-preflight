@@ -2,10 +2,15 @@
 
 ## Unreleased
 
-- Dependabot opens update PRs for the Cargo dependencies and the GitHub Actions: minor and patch updates grouped once a month, a major update on its own, and nothing newer than 5 days. A person finishes each PR (a Cargo update needs THIRD-PARTY-LICENSES.md regenerated). The actions used only by the release workflow stay by-hand updates, and the licence and dependency checks are now required before a merge.
-- CI runs the tests on every runner the release builds on: Windows, macOS (Apple silicon and Intel) and Linux ARM, as well as x86_64 Linux, which already ran them. Every CI checkout now drops the git credentials, and the new test job stops after 30 minutes. The first Windows run found that the README tests didn't read a Windows checkout (CRLF line endings); fixed in the tests, nothing in Preflight changes.
-- CI checks every workflow with actionlint and shellcheck (prebuilt, pinned by version and SHA-256): expressions, permissions, action inputs and the shell in each `run:` step, so mistakes in the release, weekly and by-hand workflows (expressions, permissions, action inputs, events, shell) fail CI before they merge, not when they first run. The `Live` workflow checks out without keeping git credentials, like the others.
-- The crate description (the line under the title on crates.io), the MCP Registry description (`server.json`) and the business card (`agent.fafa`) name the namespace login check, new in 0.2.0, which they had left out.
+## 0.2.2 (2026-11-13)
+
+The crates.io, registry and business card descriptions name the namespace login, and every release platform is now tested.
+
+- The crate description (the line under the title on crates.io), the MCP Registry description (`server.json`) and the business card (`agent.fafa`) name the namespace login check, new in 0.2.0, which they had left out. The crate's homepage is now its own write-up, https://wolfejam.dev/blog/rust-mcp-preflight.
+- CI runs the tests on every runner the release builds on: Windows, macOS (Apple silicon and Intel) and Linux ARM, as well as x86_64 Linux, which already ran them. The first Windows run found that the README tests didn't read a Windows checkout (CRLF line endings); fixed in the tests, nothing in Preflight changes. Every CI checkout now drops the git credentials, and the test job stops after 30 minutes.
+- CI checks every workflow with actionlint and shellcheck (prebuilt, pinned by version and SHA-256), so mistakes in the release, weekly and by-hand workflows (expressions, permissions, action inputs, events, the shell in each `run:` step) fail CI before they merge, not when they first run. The `Live` workflow checks out without keeping git credentials, like the others.
+- Dependabot opens update PRs for the Cargo dependencies and the GitHub Actions: minor and patch updates grouped once a month, a major update on its own, and nothing newer than 5 days. A person finishes each PR (a Cargo update usually needs `THIRD-PARTY-LICENSES.md` regenerated). The actions used only by the release workflow stay by-hand updates. The licence and dependency checks are now required before a merge, and Dependabot security updates are on.
+- `base64` 0.23.1 (was 0.22.1), which decodes the namespace login keys; the key tests pass unchanged. `actions/checkout` v7 in every workflow (it blocks checking out fork pull requests under `pull_request_target` and `workflow_run`, which no workflow here uses).
 
 ## 0.2.1 (2026-11-12)
 
