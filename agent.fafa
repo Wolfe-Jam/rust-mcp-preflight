@@ -24,7 +24,7 @@ capabilities:
       - check_readme
   - name: check_name
     type: tool
-    description: The name's publish rules, whether it's listed, and which login its namespace needs
+    description: The name's publish rules, listing and namespace login (GitHub, or the DNS/HTTP key for a domain namespace)
     tags:
       - check_name
 endpoints:

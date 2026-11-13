@@ -64,7 +64,7 @@ fn result(report: checks::Report, title: &str) -> CallToolResult {
 #[tool_router]
 impl PreflightServer {
     #[tool(
-        description = "Run every check on a server.json before mcp-publisher publish: its cargo rules, the server name, and the mcp-name line in each cargo package's README on crates.io. Reads only; publishes nothing.",
+        description = "Run every check on a server.json before mcp-publisher publish: its cargo rules, the server name and its namespace login, and the mcp-name line in each cargo package's README on crates.io. Reads only; publishes nothing.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn preflight(&self, params: Parameters<ServerJsonParams>) -> CallToolResult {
