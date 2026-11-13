@@ -39,7 +39,7 @@ url = "2"
 regex = { version = "1", default-features = false, features = ["std", "perf"] }
 hickory-resolver = { version = "0.26", default-features = false, features = ["tokio", "system-config"] }
 p384 = { version = "0.14", default-features = false, features = ["arithmetic"] }
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }
