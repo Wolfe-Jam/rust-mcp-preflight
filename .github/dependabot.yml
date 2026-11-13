@@ -1,0 +1,31 @@
+# Monthly update PRs, one per ecosystem. Security advisories are checked
+# weekly by cargo-deny (deny.yml); this keeps the versions current.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: deps
+    groups:
+      cargo:
+        patterns: ["*"]
+    # Any version change also changes THIRD-PARTY-LICENSES.md, so the
+    # licences job fails until it is regenerated on the PR branch:
+    #   cargo fetch --locked && cargo about generate --frozen --fail about.hbs -o THIRD-PARTY-LICENSES.md
+    # The msrv job (Rust 1.88) fails if an update needs a newer Rust.
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
+    ignore:
+      # @1.88 is the MSRV and @stable a channel, not versions to bump; the
+      # SHA-pinned copy in release.yml is moved by hand with the date.
+      - dependency-name: dtolnay/rust-toolchain
