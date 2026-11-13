@@ -4163,7 +4163,7 @@ SOFTWARE.
 ## MIT License
 
 Used by:
-- rust-mcp-preflight 0.2.1 (https://github.com/Wolfe-Jam/rust-mcp-preflight)
+- rust-mcp-preflight 0.2.2 (https://github.com/Wolfe-Jam/rust-mcp-preflight)
 
 ~~~~text
 MIT License
