@@ -370,15 +370,6 @@ async fn http_key(domain: &str) -> Result<Option<String>, String> {
     .await
 }
 
-/// A duration in seconds, to a tenth when it isn't whole: "10", "4.5".
-fn seconds(d: Duration) -> String {
-    if d.subsec_millis() == 0 {
-        d.as_secs().to_string()
-    } else {
-        format!("{:.1}", d.as_secs_f64())
-    }
-}
-
 /// `FetchKey` in http.go: up to `HTTP_KEY_ATTEMPTS` tries, `backoff` apart,
 /// each within `HTTP_KEY_ATTEMPT_TIMEOUT` and all within `overall`. A failure
 /// that isn't temporary ends it at once. The error says how many attempts
@@ -393,7 +384,8 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Option<String>, FetchError>>,
 {
-    let deadline = tokio::time::Instant::now() + overall;
+    let start = tokio::time::Instant::now();
+    let deadline = start + overall;
     let mut last = String::new();
     for n in 1..=HTTP_KEY_ATTEMPTS {
         if n > 1 {
@@ -406,9 +398,10 @@ where
         let outcome = tokio::time::timeout(budget, attempt())
             .await
             .unwrap_or_else(|_| {
+                // the whole wait so far, not this attempt's share of it
                 Err(FetchError::retry(format!(
-                    "{url}: no answer within {} seconds",
-                    seconds(budget)
+                    "{url}: no answer within {:.0} seconds",
+                    start.elapsed().as_secs_f64()
                 )))
             });
         match outcome {
@@ -449,14 +442,28 @@ fn pinned_client(domain: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, 
         .map_err(|e| e.to_string())
 }
 
+/// Whether an error or any of its causes says `text`.
+fn mentions(e: &dyn std::error::Error, text: &str) -> bool {
+    let mut cause: Option<&dyn std::error::Error> = Some(e);
+    while let Some(c) = cause {
+        if c.to_string().contains(text) {
+            return true;
+        }
+        cause = c.source();
+    }
+    false
+}
+
 /// `fetchKeyOnce` in http.go: one fetch of a key URL with the registry's
 /// status and size rules, saying whether a failure is worth another try.
 async fn read_key(client: &reqwest::Client, url: &str) -> Result<Option<String>, FetchError> {
     let mut resp = client.get(url).send().await.map_err(|e| {
         let why = format!("{url}: {}", with_causes(&e));
         // `isRetryableHTTPFetchError`: never again for a certificate that
-        // doesn't verify, known by rustls's message (a test holds it).
-        if why.contains(CERTIFICATE_ERROR) {
+        // doesn't verify, known by rustls's message (a test holds it). Read
+        // from the whole chain: `why` is cut to fit, and a long URL can push
+        // the message past the cut.
+        if mentions(&e, CERTIFICATE_ERROR) {
             FetchError::fatal(why)
         } else {
             FetchError::retry(why)
@@ -812,6 +819,10 @@ mod tests {
         // stale one first no longer hides the good one
         let body = format!("v=MCPv1; k=ed25519; p=AAAA\nv=MCPv1; k=ed25519; p={ED}");
         assert!(matches!(evaluate(&[body]), Found::Keys(k) if k.len() == 1));
+        // the usual key change: the old key still valid, in front. 0.2.2
+        // found only the first; now both are listed
+        let body = format!("v=MCPv1; k=ed25519; p={ED}\nv=MCPv1; k=ecdsap384; p={P384_G}");
+        assert!(matches!(evaluate(&[body]), Found::Keys(k) if k.len() == 2));
         // and two bad ones in one string get the generic error, not the first one's
         assert_eq!(
             evaluate(&["v=MCPv1; k=ed25519; p=AAAA v=MCPv1; k=x; p=AAAA".into()]),
@@ -1030,6 +1041,26 @@ mod tests {
         // a rustls update that rewords it would retry bad certificates
         let e = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
         assert!(e.to_string().contains(CERTIFICATE_ERROR), "{e}");
+        // found as a cause, under a long message that doesn't say it
+        #[derive(Debug)]
+        struct Outer(rustls::Error);
+        impl std::fmt::Display for Outer {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "error sending request for url ({})", "x".repeat(400))
+            }
+        }
+        impl std::error::Error for Outer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let outer = Outer(e);
+        assert!(!outer.to_string().contains(CERTIFICATE_ERROR));
+        assert!(mentions(&outer, CERTIFICATE_ERROR));
+        assert!(!mentions(
+            &std::io::Error::other("connection reset"),
+            CERTIFICATE_ERROR
+        ));
     }
 
     #[tokio::test]
@@ -1125,7 +1156,7 @@ mod tests {
         .await;
         assert_eq!(
             got,
-            Err("u: no answer within 4.5 seconds (after 2 attempts)".into())
+            Err("u: no answer within 15 seconds (after 2 attempts)".into())
         );
     }
 

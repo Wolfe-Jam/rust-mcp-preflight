@@ -7,12 +7,12 @@
     "url": "https://github.com/Wolfe-Jam/rust-mcp-preflight",
     "source": "github"
   },
-  "version": "0.2.2",
+  "version": "0.2.3",
   "packages": [
     {
       "registryType": "cargo",
       "identifier": "rust-mcp-preflight",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "transport": { "type": "stdio" }
     }
   ]
