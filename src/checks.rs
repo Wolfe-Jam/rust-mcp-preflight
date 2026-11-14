@@ -112,17 +112,16 @@ fn transient(status: u16) -> bool {
 }
 
 /// Whether a status from static.crates.io means "no README, or no such
-/// version", so crates.io must be asked which. The registry asks on a 403,
-/// which static.crates.io gave for both. Since 2026-11-11 it answers 404 for
-/// both instead (seen by a run of the live tests), so ask on that too, or a
-/// missing version loses "cargo publish first".
+/// version", so crates.io must be asked which: a 403, or since 2026-11-11 a
+/// 404 (seen by a run of the live tests). The registry asks on both too
+/// (cargoReadmeUnavailableError).
 fn asks_crates_io(status: u16) -> bool {
     status == 403 || status == 404
 }
 
 /// What to say when static.crates.io has no README for the version (`status`
 /// 403 or 404), given what the version lookup answered (`None`: crates.io
-/// couldn't be reached). The outcomes of the registry's cargoReadme403Error,
+/// couldn't be reached). The outcomes of the registry's cargoReadmeUnavailableError,
 /// with "couldn't confirm" split into a temporary error and no connection.
 fn no_readme_message(
     status: u16,

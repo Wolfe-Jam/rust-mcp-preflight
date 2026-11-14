@@ -101,12 +101,14 @@ pub enum Found {
 
 /// `ParseMCPKeysFromStrings` plus the checks in `ExchangeToken` (common.go):
 /// no record → none; a single record that fails → its error; otherwise the
-/// valid keys, or "no valid MCP public key found".
+/// valid keys, or "no valid MCP public key found". Every record in a string
+/// counts, not just the first: the HTTP key is one string, and a stale record
+/// left in front of the new one while changing keys mustn't hide it.
 pub fn evaluate(records: &[String]) -> Found {
     let pattern = record_pattern();
     let parsed: Vec<Result<Key, String>> = records
         .iter()
-        .filter_map(|r| pattern.captures(r))
+        .flat_map(|r| pattern.captures_iter(r))
         .map(|c| parse_key(&c[1], &c[2]))
         .collect();
     if parsed.is_empty() {
@@ -306,10 +308,35 @@ fn key_client() -> reqwest::ClientBuilder {
         .no_proxy()
 }
 
+/// `httpKeyFetchAttempts`, `httpKeyFetchTimeout` (one attempt, lookup
+/// included), `httpKeyFetchOverallTimeout` and `httpKeyFetchRetryBackoff` in
+/// http.go.
+const HTTP_KEY_ATTEMPTS: u32 = 2;
+const HTTP_KEY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
+const HTTP_KEY_OVERALL_TIMEOUT: Duration = Duration::from_secs(15);
+const HTTP_KEY_RETRY_BACKOFF: Duration = Duration::from_millis(500);
+
+/// A failed key fetch, and whether http.go would try again: yes for no
+/// connection, a timeout, a cut-off body, HTTP 408, 429 or 5xx; no for
+/// anything about the request itself.
+#[derive(Debug, PartialEq)]
+struct FetchError {
+    why: String,
+    retry: bool,
+}
+
+impl FetchError {
+    fn retry(why: String) -> Self {
+        Self { why, retry: true }
+    }
+    fn fatal(why: String) -> Self {
+        Self { why, retry: false }
+    }
+}
+
 /// The HTTP key, read as http.go reads it: a valid domain, public addresses
-/// only, one 10-second budget for the lookup and the fetch, no redirects, 200
-/// only, at most 4096 bytes, trimmed. `Ok(None)` for a 404 (nothing
-/// published).
+/// only, no redirects, 200 only, at most 4096 bytes, trimmed, and a temporary
+/// failure tried once more. `Ok(None)` for a 404 (nothing published).
 async fn http_key(domain: &str) -> Result<Option<String>, String> {
     if !is_valid_domain(domain) {
         return Err(format!(
@@ -317,16 +344,72 @@ async fn http_key(domain: &str) -> Result<Option<String>, String> {
         ));
     }
     let url = format!("https://{domain}/.well-known/mcp-registry-auth");
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let resolved: Vec<SocketAddr> = tokio::net::lookup_host((domain, 443))
-            .await
-            .map_err(|e| format!("{url}: {}", with_causes(&e)))?
-            .collect();
-        let public = public_addrs(domain, resolved)?;
-        read_key(&pinned_client(domain, &public)?, &url).await
-    })
+    with_retry(
+        &url,
+        HTTP_KEY_OVERALL_TIMEOUT,
+        HTTP_KEY_RETRY_BACKOFF,
+        || async {
+            // A lookup that fails is tried again even when the name doesn't
+            // exist, which the registry doesn't retry: the system resolver
+            // doesn't say "not found" in a portable way. The verdict is the
+            // same, half a second later.
+            let resolved: Vec<SocketAddr> = tokio::net::lookup_host((domain, 443))
+                .await
+                .map_err(|e| FetchError::retry(format!("{url}: {}", with_causes(&e))))?
+                .collect();
+            let public = public_addrs(domain, resolved).map_err(FetchError::fatal)?;
+            let client = pinned_client(domain, &public).map_err(FetchError::fatal)?;
+            read_key(&client, &url).await
+        },
+    )
     .await
-    .map_err(|_| format!("{url}: no answer within 10 seconds"))?
+}
+
+/// `FetchKey` in http.go: up to `HTTP_KEY_ATTEMPTS` tries, `backoff` apart,
+/// each within `HTTP_KEY_ATTEMPT_TIMEOUT` and all within `overall`. A failure
+/// that isn't temporary ends it at once. The error says how many attempts
+/// were made.
+async fn with_retry<F, Fut>(
+    url: &str,
+    overall: Duration,
+    backoff: Duration,
+    mut attempt: F,
+) -> Result<Option<String>, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Option<String>, FetchError>>,
+{
+    let deadline = tokio::time::Instant::now() + overall;
+    let mut last = String::new();
+    for n in 1..=HTTP_KEY_ATTEMPTS {
+        if n > 1 {
+            if tokio::time::Instant::now() + backoff >= deadline {
+                return Err(format!("{last} (no time left to try again)"));
+            }
+            tokio::time::sleep(backoff).await;
+        }
+        let budget = HTTP_KEY_ATTEMPT_TIMEOUT.min(deadline - tokio::time::Instant::now());
+        let outcome = tokio::time::timeout(budget, attempt())
+            .await
+            .unwrap_or_else(|_| {
+                Err(FetchError::retry(format!(
+                    "{url}: no answer within {} seconds",
+                    budget.as_secs_f32().round()
+                )))
+            });
+        match outcome {
+            Ok(key) => return Ok(key),
+            Err(e) if !e.retry => {
+                return Err(if n > 1 {
+                    format!("{} (after {n} attempts)", e.why)
+                } else {
+                    e.why
+                });
+            }
+            Err(e) => last = e.why,
+        }
+    }
+    Err(format!("{last} (after {HTTP_KEY_ATTEMPTS} attempts)"))
 }
 
 /// The addresses the registry would dial, or why there are none.
@@ -352,38 +435,51 @@ fn pinned_client(domain: &str, addrs: &[SocketAddr]) -> Result<reqwest::Client, 
         .map_err(|e| e.to_string())
 }
 
-/// One fetch of a key URL with the registry's status and size rules.
-async fn read_key(client: &reqwest::Client, url: &str) -> Result<Option<String>, String> {
-    let mut resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("{url}: {}", with_causes(&e)))?;
+/// `fetchKeyOnce` in http.go: one fetch of a key URL with the registry's
+/// status and size rules, saying whether a failure is worth another try.
+async fn read_key(client: &reqwest::Client, url: &str) -> Result<Option<String>, FetchError> {
+    let mut resp = client.get(url).send().await.map_err(|e| {
+        let why = format!("{url}: {}", with_causes(&e));
+        // `isRetryableHTTPFetchError`: never again for a certificate that
+        // doesn't verify. rustls isn't a direct dependency, so it's known by
+        // its message ("invalid peer certificate").
+        if why.contains("invalid peer certificate") {
+            FetchError::fatal(why)
+        } else {
+            FetchError::retry(why)
+        }
+    })?;
     let status = resp.status().as_u16();
     if status == 404 {
         return Ok(None);
     }
     if resp.status().is_redirection() {
-        return Err(format!(
+        return Err(FetchError::fatal(format!(
             "{url} answers HTTP {status} (a redirect); the registry doesn't follow redirects, so serve the key at this URL"
-        ));
+        )));
     }
     if status != 200 {
-        return Err(format!(
-            "{url} answers HTTP {status}; the registry needs 200"
-        ));
+        let why = format!("{url} answers HTTP {status}; the registry needs 200");
+        // `isTransientHTTPStatus`: a timeout, a rate limit or a server error.
+        return Err(
+            if status == 408 || status == 429 || (500..600).contains(&status) {
+                FetchError::retry(why)
+            } else {
+                FetchError::fatal(why)
+            },
+        );
     }
     let mut body = Vec::new();
     while let Some(chunk) = resp
         .chunk()
         .await
-        .map_err(|e| format!("{url}: {}", with_causes(&e)))?
+        .map_err(|e| FetchError::retry(format!("{url}: {}", with_causes(&e))))?
     {
         body.extend_from_slice(&chunk);
         if body.len() > MAX_KEY_RESPONSE {
-            return Err(format!(
+            return Err(FetchError::fatal(format!(
                 "{url} is over {MAX_KEY_RESPONSE} bytes; the registry reads no more than that"
-            ));
+            )));
         }
     }
     Ok(Some(String::from_utf8_lossy(&body).trim().to_string()))
@@ -699,6 +795,15 @@ mod tests {
             ]),
             Found::Keys(_)
         ));
+        // the same two in one string, as the HTTP key arrives (#1849): the
+        // stale one first no longer hides the good one
+        let body = format!("v=MCPv1; k=ed25519; p=AAAA\nv=MCPv1; k=ed25519; p={ED}");
+        assert!(matches!(evaluate(&[body]), Found::Keys(k) if k.len() == 1));
+        // and two bad ones in one string get the generic error, not the first one's
+        assert_eq!(
+            evaluate(&["v=MCPv1; k=ed25519; p=AAAA v=MCPv1; k=x; p=AAAA".into()]),
+            Found::Invalid("no valid MCP public key found".into())
+        );
     }
 
     #[test]
@@ -844,6 +949,7 @@ mod tests {
             read_key(&client, &url)
                 .await
                 .unwrap_err()
+                .why
                 .contains("over 4096 bytes")
         );
         // 404: nothing published
@@ -860,6 +966,7 @@ mod tests {
             read_key(&client, &url)
                 .await
                 .unwrap_err()
+                .why
                 .contains("redirect")
         );
         // any other status fails
@@ -868,7 +975,131 @@ mod tests {
             read_key(&client, &url)
                 .await
                 .unwrap_err()
+                .why
                 .contains("HTTP 406")
+        );
+        // which failures http.go tries again: 408, 429 and 5xx; not other
+        // statuses, redirects or an oversized body
+        for (status, retry) in [
+            ("406 Not Acceptable", false),
+            ("408 Request Timeout", true),
+            ("429 Too Many Requests", true),
+            ("503 Service Unavailable", true),
+            ("301 Moved Permanently", false),
+        ] {
+            let (url, _) = serve(response(status, "", "")).await;
+            assert_eq!(
+                read_key(&client, &url).await.unwrap_err().retry,
+                retry,
+                "{status}"
+            );
+        }
+        let (url, _) = serve(response("200 OK", "", &format!("{at_cap} "))).await;
+        assert!(!read_key(&client, &url).await.unwrap_err().retry);
+        // nothing listening: no connection, tried again
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let err = read_key(&client, &format!("http://127.0.0.1:{port}/k"))
+            .await
+            .unwrap_err();
+        assert!(err.retry, "{}", err.why);
+    }
+
+    #[tokio::test]
+    async fn a_temporary_failure_is_tried_once_more() {
+        type Outcome = Result<Option<String>, FetchError>;
+        let quick = Duration::from_millis(1);
+        let overall = Duration::from_secs(15);
+        // runs with_retry over scripted attempts: what it returned, and how
+        // many attempts it made
+        async fn run(
+            overall: Duration,
+            backoff: Duration,
+            outcomes: Vec<Outcome>,
+        ) -> (Result<Option<String>, String>, usize) {
+            let left = std::cell::RefCell::new(outcomes.into_iter());
+            let made = std::cell::Cell::new(0);
+            let got = with_retry("u", overall, backoff, || {
+                made.set(made.get() + 1);
+                let next = left.borrow_mut().next().expect("an attempt too many");
+                async move { next }
+            })
+            .await;
+            (got, made.get())
+        }
+        let temporary = |why: &str| Err(FetchError::retry(why.into()));
+        let lasting = |why: &str| Err(FetchError::fatal(why.into()));
+
+        // a temporary failure, then the key
+        assert_eq!(
+            run(
+                overall,
+                quick,
+                vec![temporary("u answers HTTP 503"), Ok(Some("key".into()))]
+            )
+            .await,
+            (Ok(Some("key".into())), 2)
+        );
+        // a failure that isn't temporary: one attempt, its own message
+        assert_eq!(
+            run(overall, quick, vec![lasting("u answers HTTP 406")]).await,
+            (Err("u answers HTTP 406".into()), 1)
+        );
+        // temporary twice: the last failure, and how many attempts
+        assert_eq!(
+            run(
+                overall,
+                quick,
+                vec![
+                    temporary("u answers HTTP 503"),
+                    temporary("u answers HTTP 502")
+                ]
+            )
+            .await,
+            (Err("u answers HTTP 502 (after 2 attempts)".into()), 2)
+        );
+        // temporary, then not: stops there, and says it was the second try
+        assert_eq!(
+            run(
+                overall,
+                quick,
+                vec![
+                    temporary("u answers HTTP 503"),
+                    lasting("u answers HTTP 406")
+                ]
+            )
+            .await,
+            (Err("u answers HTTP 406 (after 2 attempts)".into()), 2)
+        );
+        // no time left for the backoff: no second attempt
+        assert_eq!(
+            run(
+                quick,
+                Duration::from_secs(1),
+                vec![temporary("u answers HTTP 503")]
+            )
+            .await,
+            (
+                Err("u answers HTTP 503 (no time left to try again)".into()),
+                1
+            )
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_attempt_that_hangs_times_out_within_the_overall_budget() {
+        // first attempt hangs: 10 s; the second gets what's left of 15 s
+        let got = with_retry(
+            "u",
+            HTTP_KEY_OVERALL_TIMEOUT,
+            HTTP_KEY_RETRY_BACKOFF,
+            || std::future::pending(),
+        )
+        .await;
+        assert_eq!(
+            got,
+            Err("u: no answer within 5 seconds (after 2 attempts)".into())
         );
     }
 

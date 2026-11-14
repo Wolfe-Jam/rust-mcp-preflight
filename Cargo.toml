@@ -42,7 +42,7 @@ p384 = { version = "0.14", default-features = false, features = ["arithmetic"] }
 base64 = "0.23"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "test-util"] }
 
 [profile.release]
 opt-level = 3
