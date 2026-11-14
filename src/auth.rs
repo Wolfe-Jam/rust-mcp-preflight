@@ -102,8 +102,9 @@ pub enum Found {
 /// `ParseMCPKeysFromStrings` plus the checks in `ExchangeToken` (common.go):
 /// no record → none; a single record that fails → its error; otherwise the
 /// valid keys, or "no valid MCP public key found". Every record in a string
-/// counts, not just the first: the HTTP key is one string, and a stale record
-/// left in front of the new one while changing keys mustn't hide it.
+/// counts, not just the first (an HTTP key file, or one TXT string, can hold
+/// several), so a stale record left in front of the new one while changing
+/// keys doesn't hide it.
 pub fn evaluate(records: &[String]) -> Found {
     let pattern = record_pattern();
     let parsed: Vec<Result<Key, String>> = records
@@ -291,7 +292,7 @@ fn is_blocked_v6(ip: Ipv6Addr) -> bool {
 }
 
 /// The client the key is fetched with: the registry's `Accept: text/plain`,
-/// a 10-second budget for the whole fetch, and no redirects.
+/// a 10-second budget for one attempt, and no redirects.
 fn key_client() -> reqwest::ClientBuilder {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
@@ -315,6 +316,10 @@ const HTTP_KEY_ATTEMPTS: u32 = 2;
 const HTTP_KEY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_KEY_OVERALL_TIMEOUT: Duration = Duration::from_secs(15);
 const HTTP_KEY_RETRY_BACKOFF: Duration = Duration::from_millis(500);
+
+/// How rustls's `Error::InvalidCertificate` reads, the way the error
+/// arrives through reqwest.
+const CERTIFICATE_ERROR: &str = "invalid peer certificate";
 
 /// A failed key fetch, and whether http.go would try again: yes for no
 /// connection, a timeout, a cut-off body, HTTP 408, 429 or 5xx; no for
@@ -365,6 +370,15 @@ async fn http_key(domain: &str) -> Result<Option<String>, String> {
     .await
 }
 
+/// A duration in seconds, to a tenth when it isn't whole: "10", "4.5".
+fn seconds(d: Duration) -> String {
+    if d.subsec_millis() == 0 {
+        d.as_secs().to_string()
+    } else {
+        format!("{:.1}", d.as_secs_f64())
+    }
+}
+
 /// `FetchKey` in http.go: up to `HTTP_KEY_ATTEMPTS` tries, `backoff` apart,
 /// each within `HTTP_KEY_ATTEMPT_TIMEOUT` and all within `overall`. A failure
 /// that isn't temporary ends it at once. The error says how many attempts
@@ -394,7 +408,7 @@ where
             .unwrap_or_else(|_| {
                 Err(FetchError::retry(format!(
                     "{url}: no answer within {} seconds",
-                    budget.as_secs_f32().round()
+                    seconds(budget)
                 )))
             });
         match outcome {
@@ -441,9 +455,8 @@ async fn read_key(client: &reqwest::Client, url: &str) -> Result<Option<String>,
     let mut resp = client.get(url).send().await.map_err(|e| {
         let why = format!("{url}: {}", with_causes(&e));
         // `isRetryableHTTPFetchError`: never again for a certificate that
-        // doesn't verify. rustls isn't a direct dependency, so it's known by
-        // its message ("invalid peer certificate").
-        if why.contains("invalid peer certificate") {
+        // doesn't verify, known by rustls's message (a test holds it).
+        if why.contains(CERTIFICATE_ERROR) {
             FetchError::fatal(why)
         } else {
             FetchError::retry(why)
@@ -1004,6 +1017,19 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.retry, "{}", err.why);
+        // a response cut off before its length: tried again
+        let (url, _) =
+            serve("HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nabc".into())
+                .await;
+        let err = read_key(&client, &url).await.unwrap_err();
+        assert!(err.retry, "{}", err.why);
+    }
+
+    #[test]
+    fn a_certificate_error_still_reads_as_matched() {
+        // a rustls update that rewords it would retry bad certificates
+        let e = rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer);
+        assert!(e.to_string().contains(CERTIFICATE_ERROR), "{e}");
     }
 
     #[tokio::test]
@@ -1099,7 +1125,7 @@ mod tests {
         .await;
         assert_eq!(
             got,
-            Err("u: no answer within 5 seconds (after 2 attempts)".into())
+            Err("u: no answer within 4.5 seconds (after 2 attempts)".into())
         );
     }
 
