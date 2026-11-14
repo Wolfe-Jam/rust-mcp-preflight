@@ -1094,7 +1094,7 @@ mod tests {
             "u",
             HTTP_KEY_OVERALL_TIMEOUT,
             HTTP_KEY_RETRY_BACKOFF,
-            || std::future::pending(),
+            std::future::pending,
         )
         .await;
         assert_eq!(
