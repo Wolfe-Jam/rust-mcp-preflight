@@ -42,7 +42,9 @@ p384 = { version = "0.14", default-features = false, features = ["arithmetic"] }
 base64 = "0.23"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "test-util"] }
+# The certificate message read_key matches (src/auth.rs); already in the lock through reqwest.
+rustls = { version = "0.23", default-features = false }
 
 [profile.release]
 opt-level = 3

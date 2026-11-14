@@ -5,7 +5,7 @@
 # the change, update the port if it needs it, then move the commit here
 # (the full 40-character SHA: GitHub fetches only those).
 
-commit c9fe19bdf021b2dd18236e3f5b464afb69c51b30
+commit 115f85225c9fac5281d8a2dc8551cf49b004d2f9
 
 # path                                            ported in
 internal/validators/registries/cargo.go           src/checks.rs  (the README check)
