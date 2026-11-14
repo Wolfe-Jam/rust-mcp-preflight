@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- The namespace login reads every `v=MCPv1` record in the HTTP key file or in one DNS TXT string, not just the first, as the registry does since registry#1849. A stale record left in front of the new one while changing keys made Preflight say FAIL for a domain the registry accepts.
+## 0.2.3 (2026-11-14)
+
+Back in step with the registry: every published key counts, and a temporary failure fetching the HTTP key is tried once more.
+
+- The namespace login reads every `v=MCPv1` record in the HTTP key file or in one DNS TXT string, not just the first, as the registry does since registry#1849. A record that doesn't parse, left in front of a good one, made Preflight say FAIL for a domain the registry accepts. With a valid old key in front, Preflight said PASS but listed only the old key's fingerprint; it now lists every key. Several records that all fail now give "no valid MCP public key found", as the registry does, in place of the first record's error.
 - The HTTP key fetch is tried once more after a temporary failure (no connection, a timeout, a cut-off response, HTTP 408, 429 or 5xx), half a second later and within 15 seconds in all, as the registry does since registry#1847. A failure says how many attempts were made. A redirect, another status, an oversized response, a private address or a certificate that doesn't verify still fails at once. One difference: a lookup that fails is tried again even when the name doesn't exist, which the registry doesn't retry; the verdict is the same.
 - Checked against the registry's `main` at `115f852` (was `c9fe19b`). Its cargo validator now asks crates.io on a 404 as well as a 403, as Preflight has since 0.2.1; no change here.
 
